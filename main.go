@@ -139,12 +139,17 @@ func formatBackup(body string) string {
 // files interleave naturally:
 //
 //	BTFL_cli_backup_<CRAFT>_<YYYYMMDD>_<HHMMSS>_<BOARD>.txt
+//
+// Configurator uppercases the craft slug — a mixed-case craft name like
+// "LionBee3" lands as "LIONBEE3" — so we do too. Board names already come
+// uppercased from the FC, but we ToUpper defensively to cover any future
+// firmware that doesn't.
 func backupFilename(info dump.Info, when time.Time) string {
-	craft := sanitize(info.CraftName)
+	craft := strings.ToUpper(sanitize(info.CraftName))
 	if craft == "" {
 		craft = "UNKNOWN"
 	}
-	board := sanitize(info.Board)
+	board := strings.ToUpper(sanitize(info.Board))
 	if board == "" {
 		board = "UNKNOWN"
 	}
