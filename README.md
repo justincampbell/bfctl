@@ -35,6 +35,8 @@ bfctl info --json            # …as JSON
 bfctl ports                  # list detected FCs
 bfctl set pilot_name = Maverick   # write a setting and save (reboots the FC)
 bfctl set pilot_name = Maverick --no-save   # …or set without persisting
+bfctl exec status                # any other CLI command, reply printed verbatim
+bfctl exec feature SOFTSERIAL    # toggle a feature
 ```
 
 If more than one FC is plugged in, pass `--port`:

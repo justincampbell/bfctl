@@ -230,15 +230,21 @@ func (s *Session) Path() string { return s.path }
 
 // Run sends a CLI command, reads the reply, and returns the body with the
 // echoed command and trailing prompt stripped.
+//
+// On a read error (e.g. the FC reboots mid-reply because the command was
+// `save`), Run still returns whatever was received before the error so the
+// caller can decide what to do with the partial output. Existing callers
+// that already bail on err see no behaviour change.
 func (s *Session) Run(cmd string) (string, error) {
 	if _, err := s.port.Write([]byte(cmd + "\r\n")); err != nil {
 		return "", fmt.Errorf("write %q: %w", cmd, err)
 	}
 	raw, err := s.readUntilSilence(10*time.Second, 1500*time.Millisecond)
+	cleaned := cleanResponse(string(raw), cmd)
 	if err != nil {
-		return "", err
+		return cleaned, err
 	}
-	return cleanResponse(string(raw), cmd), nil
+	return cleaned, nil
 }
 
 // Save sends `save`. Betaflight writes the configuration to flash and then

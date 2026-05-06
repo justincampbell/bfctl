@@ -27,9 +27,11 @@ internal/dump/dump.go  — parse craft_name, board_name, etc. out of a `diff all
 
 `internal/dump/dump_test.go` carries an inline synthetic `diff all` fixture. Real captured dumps from the user's drones are gitignored (`air65.txt`, `BTFL_cli_backup_*.txt`) — do not check them in.
 
-Subcommands: `backup`, `dump`, `get`, `info`, `ports`, `set`, `version`. `cli` and `restore` are reserved for future work.
+Subcommands: `backup`, `dump`, `exec`, `get`, `info`, `ports`, `set`, `version`. `cli` and `restore` are reserved for future work.
 
 `set` writes a single CLI `set` line to the FC and (by default) follows it with `save`. `save` reboots the FC — that is the only way Betaflight persists configuration changes. `--no-save` opts out for cases where you want to chain multiple sets manually.
+
+`exec` is the catch-all for any other CLI command (`status`, `feature SOFTSERIAL`, `save`, `defaults`, …). It writes one line, prints the reply, and tolerates the post-write disconnect that comes with reboot-causing commands (save/exit/bl/factory_reset). It does **not** parse the reply or auto-save — that's a job for dedicated subcommands.
 
 ## Talking to the FC — non-obvious bits
 

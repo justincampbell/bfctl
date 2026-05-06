@@ -44,6 +44,8 @@ func main() {
 		os.Exit(cmdBackup(os.Args[2:]))
 	case "dump":
 		os.Exit(cmdDump(os.Args[2:]))
+	case "exec":
+		os.Exit(cmdExec(os.Args[2:]))
 	case "get":
 		os.Exit(cmdGet(os.Args[2:]))
 	case "info":
@@ -72,6 +74,7 @@ Usage:
 Commands:
   backup   Save full configuration to a file
   dump     Print full configuration (`+"`diff all`"+`) to stdout
+  exec     Send one CLI command verbatim and print the reply
   get      Print one setting's value
   info     Print FC metadata (board, firmware, craft, …)
   ports    List detected Betaflight FCs
@@ -173,6 +176,58 @@ func cmdDump(args []string) int {
 	fmt.Print(out)
 	if !strings.HasSuffix(out, "\n") {
 		fmt.Println()
+	}
+	return exitOK
+}
+
+// ----- exec -----
+
+// cmdExec is the catch-all for Betaflight CLI commands that don't have a
+// dedicated subcommand. Args after the flags are joined with a single space
+// and sent verbatim, so quoting matches what you'd type in the Configurator
+// CLI:
+//
+//	bfctl exec status
+//	bfctl exec feature SOFTSERIAL
+//	bfctl exec save
+//
+// Some commands (`save`, `exit`, `bl`, `factory_reset`) reboot the FC, which
+// disconnects USB mid-reply. exec prints whatever was received before the
+// disconnect and exits 0; the disconnect itself is logged to stderr so the
+// caller still has a signal.
+//
+// exec is intentionally dumb — it does not parse the reply, does not save
+// after the command, and does not assume success. Use `set` for the
+// set+save flow; use `restore` (future) for batch replays.
+func cmdExec(args []string) int {
+	fs := flag.NewFlagSet("exec", flag.ContinueOnError)
+	port := fs.String("port", "", "serial device path (default: auto-detect)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "usage: bfctl exec <cli command...>")
+		return exitUsage
+	}
+	cmd := strings.Join(fs.Args(), " ")
+
+	path, err := fc.Resolve(*port)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	sess, err := fc.Open(path)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	reply, err := sess.Run(cmd)
+	reply = strings.TrimRight(reply, " \t\r\n")
+	if reply != "" {
+		fmt.Println(reply)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bfctl: read after write:", err, "(FC may have rebooted)")
 	}
 	return exitOK
 }
