@@ -1,0 +1,42 @@
+version: 2
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -X main.version={{.Tag}}
+
+archives:
+  - format_overrides:
+      - goos: windows
+        format: zip
+    files:
+      - README.md
+      - LICENSE
+
+snapshot:
+  version_template: "dev-{{.ShortCommit}}"
+
+changelog:
+  use: github-native
+  sort: asc
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+
+brews:
+  - repository:
+      owner: justincampbell
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    homepage: https://github.com/justincampbell/bfctl
+    description: CLI for backing up and inspecting Betaflight flight controller configuration over USB
+    license: MIT
