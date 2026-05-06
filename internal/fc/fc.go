@@ -12,11 +12,6 @@ import (
 	"go.bug.st/serial/enumerator"
 )
 
-const (
-	BetaflightVID = "0483"
-	BetaflightPID = "5740"
-)
-
 // ErrNoFC means no flight controller was found on any USB serial port.
 var ErrNoFC = errors.New("no Betaflight FC found")
 
@@ -36,7 +31,7 @@ type Port struct {
 	Serial  string
 }
 
-// FindAll lists every USB serial port whose VID/PID matches a Betaflight FC.
+// FindAll lists every USB serial port that looks like a Betaflight FC.
 func FindAll() ([]Port, error) {
 	all, err := enumerator.GetDetailedPortsList()
 	if err != nil {
@@ -47,7 +42,7 @@ func FindAll() ([]Port, error) {
 		if !p.IsUSB {
 			continue
 		}
-		if !strings.EqualFold(p.VID, BetaflightVID) || !strings.EqualFold(p.PID, BetaflightPID) {
+		if !looksLikeBetaflightFC(p.Product, p.VID, p.PID) {
 			continue
 		}
 		matches = append(matches, Port{
@@ -59,6 +54,54 @@ func FindAll() ([]Port, error) {
 		})
 	}
 	return matches, nil
+}
+
+// fcMatcher describes one MCU family that ships Betaflight targets. A port
+// matches if the Product string contains ProductSubstr (when set, ignoring
+// case) OR the VID:PID pair matches (when both are set).
+//
+// Supporting both signals matters because USB enumeration is platform-flaky:
+// macOS's `go.bug.st/serial` returns the Product field for STM32 boards but
+// leaves it empty for AT32 boards (only VID/PID survive). Linux and Windows
+// generally return both. Keeping both fields lets one matcher cover every
+// platform with no per-OS branching.
+type fcMatcher struct {
+	Family        string // human-readable, used in diagnostics
+	ProductSubstr string // case-insensitive substring; "" disables product match
+	VID, PID      string // hex (no 0x), case-insensitive; "" disables ID match
+}
+
+// fcMatchers enumerates every MCU family bfctl recognises as a Betaflight FC.
+// To support a new MCU family, add one row — no other code changes required.
+//
+// Note: every Betaflight target (so far) uses PID 0x5740, so the VID is the
+// distinguishing field.
+var fcMatchers = []fcMatcher{
+	{Family: "STM32 (ST)", ProductSubstr: "betaflight", VID: "0483", PID: "5740"},
+	{Family: "AT32 (Artery)", ProductSubstr: "at32 virtual com port", VID: "2e3c", PID: "5740"},
+}
+
+func (m fcMatcher) matches(product, vid, pid string) bool {
+	if m.ProductSubstr != "" && product != "" {
+		if strings.Contains(strings.ToLower(product), m.ProductSubstr) {
+			return true
+		}
+	}
+	if m.VID != "" && m.PID != "" {
+		if strings.EqualFold(vid, m.VID) && strings.EqualFold(pid, m.PID) {
+			return true
+		}
+	}
+	return false
+}
+
+func looksLikeBetaflightFC(product, vid, pid string) bool {
+	for _, m := range fcMatchers {
+		if m.matches(product, vid, pid) {
+			return true
+		}
+	}
+	return false
 }
 
 // Resolve returns the port to use. If explicit is non-empty it is returned

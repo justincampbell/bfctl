@@ -18,8 +18,16 @@ type Info struct {
 }
 
 // Parse extracts metadata from a dump body.
+//
+// Craft and pilot names can appear in two places. Older firmware emits
+// `set craft_name = …` / `set pilot_name = …`; newer firmware (e.g. AT32
+// targets on Betaflight 2025.12.x) drops those lines entirely and only
+// surfaces the values via the `# name: …` / `# pilot: …` header lines that
+// `diff all` always prints. We accept either form and prefer the `set` value
+// when both are present.
 func Parse(body string) Info {
 	var info Info
+	var headerCraft, headerPilot string
 	scanner := bufio.NewScanner(strings.NewReader(body))
 	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 	for scanner.Scan() {
@@ -35,7 +43,17 @@ func Parse(body string) Info {
 			info.CraftName = setValue(line)
 		case strings.HasPrefix(line, "set pilot_name"):
 			info.PilotName = setValue(line)
+		case strings.HasPrefix(line, "# name:"):
+			headerCraft = strings.TrimSpace(strings.TrimPrefix(line, "# name:"))
+		case strings.HasPrefix(line, "# pilot:"):
+			headerPilot = strings.TrimSpace(strings.TrimPrefix(line, "# pilot:"))
 		}
+	}
+	if info.CraftName == "" {
+		info.CraftName = headerCraft
+	}
+	if info.PilotName == "" {
+		info.PilotName = headerPilot
 	}
 	return info
 }

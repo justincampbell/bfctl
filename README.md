@@ -63,7 +63,7 @@ Stable exit codes for scripting and agent use:
 
 ## How it works
 
-The FC enumerates as a USB CDC ACM device with VID `0x0483` / PID `0x5740`. `bfctl` opens the matching `/dev/cu.usbmodem*`, sends `#\r\n` to enter CLI mode, runs `diff all`, and captures the output. It does **not** send `exit` (which would reboot the FC) — it just closes the port.
+The FC enumerates as a USB CDC ACM device. `bfctl` matches on the USB Product string (`Betaflight …` for STM32 targets, `AT32 Virtual Com Port` for Artery AT32 targets) — and falls back to VID:PID (`0483:5740` for STM32, `2E3C:5740` for AT32) on platforms that don't surface the Product field. A single binary covers both MCU families. `bfctl` opens the matching `/dev/cu.usbmodem*`, sends `#\r\n` to enter CLI mode, runs `diff all`, and captures the output. It does **not** send `exit` (which would reboot the FC) — it just closes the port.
 
 If you see "no data" errors, the most common cause is a stale Chrome WebSerial lock from the web Configurator tab. Quit Chrome and retry.
 

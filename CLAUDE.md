@@ -31,7 +31,7 @@ Subcommands: `backup`, `dump`, `get`, `info`, `ports`, `version`. Read-only for 
 
 ## Talking to the FC — non-obvious bits
 
-- **Identification**: USB CDC ACM with VID `0x0483` / PID `0x5740`. Auto-detect via `enumerator.GetDetailedPortsList`; fall back to `--port`.
+- **Identification**: USB CDC ACM. Auto-detect via `enumerator.GetDetailedPortsList`, then filter through the `fcMatchers` table in `internal/fc/fc.go`. Each row pairs a USB Product substring with a VID:PID — a port matches if either signal hits. Both are needed because `go.bug.st/serial` on macOS returns the Product field for STM32 boards but leaves it empty for AT32 boards (Linux/Windows return both). To support a new MCU family, add one row to `fcMatchers`. Fall back to `--port`.
 - **CLI mode entry needs a priming MSP frame.** Sending `#` cold is silently ignored — the FC's USB-side parser must be activated by a valid MSP exchange first. `fc.Open` sends MSP_API_VERSION (cmd 1) and looks at the reply: a `$M>` response means we're in MSP mode and can now send `#`; an echo of our MSP bytes (`$M<` or a `# ` prompt) means we're already in CLI from a prior session that closed without exiting. Both paths are handled.
 - **Single-byte `#`, no CR/LF.** This matches what the web Configurator does (`src/composables/useCli.js`).
 - **Never send `exit`.** It reboots the FC. Just close the port.

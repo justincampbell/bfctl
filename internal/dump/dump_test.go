@@ -49,6 +49,53 @@ func TestParse(t *testing.T) {
 	}
 }
 
+// AT32-style fixture: newer firmware (e.g. LIONBEE_V1 on Betaflight 2025.12.1)
+// emits the craft/pilot name only on the `# name:` / `# pilot:` header lines
+// — there is no corresponding `set craft_name`/`set pilot_name` line.
+const fixtureAT32Headers = `# version
+# Betaflight / AT32F435G (LIONBEE V1) 2025.12.1 Apr  8 2026 / 10:20:28 (272fa7260) MSP API: 1.47
+
+board_name LIONBEE_V1
+mcu_id 00842032090400000d191709
+
+# name: LionBee3
+# pilot: AceFlyer
+
+# master
+set vtx_freq = 5800
+`
+
+func TestParseAT32Headers(t *testing.T) {
+	info := Parse(fixtureAT32Headers)
+	if info.CraftName != "LionBee3" {
+		t.Errorf("CraftName = %q, want %q", info.CraftName, "LionBee3")
+	}
+	if info.PilotName != "AceFlyer" {
+		t.Errorf("PilotName = %q, want %q", info.PilotName, "AceFlyer")
+	}
+	if info.Board != "LIONBEE_V1" {
+		t.Errorf("Board = %q, want %q", info.Board, "LIONBEE_V1")
+	}
+}
+
+// When both forms are present, the `set` value wins. (Imagined firmware that
+// emits both — defends against a future version that adds `set craft_name`
+// back without removing the header line.)
+func TestParseSetWinsOverHeader(t *testing.T) {
+	body := `# name: HeaderName
+# pilot: HeaderPilot
+set craft_name = SetName
+set pilot_name = SetPilot
+`
+	info := Parse(body)
+	if info.CraftName != "SetName" {
+		t.Errorf("CraftName = %q, want %q", info.CraftName, "SetName")
+	}
+	if info.PilotName != "SetPilot" {
+		t.Errorf("PilotName = %q, want %q", info.PilotName, "SetPilot")
+	}
+}
+
 func TestGet(t *testing.T) {
 	cases := map[string]string{
 		"craft_name":         "TestCraft",
