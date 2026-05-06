@@ -228,18 +228,27 @@ func Open(path string) (*Session, error) {
 // Path returns the device path the session was opened on.
 func (s *Session) Path() string { return s.path }
 
-// Run sends a CLI command, reads the reply, and returns the body with the
-// echoed command and trailing prompt stripped.
+// Run sends a CLI command and reads the reply with conservative timeouts
+// suitable for `diff all` (10s total, 1.5s of trailing silence to mark
+// end-of-reply). For interactive use prefer RunWith with a shorter idle.
 //
 // On a read error (e.g. the FC reboots mid-reply because the command was
 // `save`), Run still returns whatever was received before the error so the
 // caller can decide what to do with the partial output. Existing callers
 // that already bail on err see no behaviour change.
 func (s *Session) Run(cmd string) (string, error) {
+	return s.RunWith(cmd, 10*time.Second, 1500*time.Millisecond)
+}
+
+// RunWith is Run with caller-chosen timeouts. total bounds the entire
+// read; idle is how long the link must stay silent for end-of-reply.
+// Tighter idle values feel snappier in a REPL but risk cutting a slow
+// streaming reply short.
+func (s *Session) RunWith(cmd string, total, idle time.Duration) (string, error) {
 	if _, err := s.port.Write([]byte(cmd + "\r\n")); err != nil {
 		return "", fmt.Errorf("write %q: %w", cmd, err)
 	}
-	raw, err := s.readUntilSilence(10*time.Second, 1500*time.Millisecond)
+	raw, err := s.readUntilSilence(total, idle)
 	cleaned := cleanResponse(string(raw), cmd)
 	if err != nil {
 		return cleaned, err

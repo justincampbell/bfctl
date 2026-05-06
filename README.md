@@ -28,7 +28,8 @@ Plug the FC in via USB and run:
 
 ```sh
 bfctl backup                 # save full config to BTFL_cli_backup_<craft>_<ts>_<board>.txt
-bfctl dump                   # print full config to stdout
+bfctl diff                   # print non-default settings (FC's `diff all`)
+bfctl dump                   # print every setting (FC's `dump all`, including defaults)
 bfctl get craft_name         # print one setting
 bfctl info                   # print FC metadata
 bfctl info --json            # …as JSON
@@ -37,6 +38,7 @@ bfctl set pilot_name = Maverick   # write a setting and save (reboots the FC)
 bfctl set pilot_name = Maverick --no-save   # …or set without persisting
 bfctl exec status                # any other CLI command, reply printed verbatim
 bfctl exec feature SOFTSERIAL    # toggle a feature
+bfctl cli                        # interactive Betaflight CLI session (history + tab completion)
 ```
 
 If more than one FC is plugged in, pass `--port`:

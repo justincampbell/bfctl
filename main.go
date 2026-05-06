@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -13,8 +14,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
+
+	"github.com/peterh/liner"
 
 	"github.com/justincampbell/bfctl/internal/dump"
 	"github.com/justincampbell/bfctl/internal/fc"
@@ -42,6 +46,10 @@ func main() {
 	switch os.Args[1] {
 	case "backup":
 		os.Exit(cmdBackup(os.Args[2:]))
+	case "cli":
+		os.Exit(cmdCLI(os.Args[2:]))
+	case "diff":
+		os.Exit(cmdDiff(os.Args[2:]))
 	case "dump":
 		os.Exit(cmdDump(os.Args[2:]))
 	case "exec":
@@ -73,7 +81,9 @@ Usage:
 
 Commands:
   backup   Save full configuration to a file
-  dump     Print full configuration (`+"`diff all`"+`) to stdout
+  cli      Open an interactive Betaflight CLI session
+  diff     Print non-default settings (`+"`diff all`"+`)
+  dump     Print every setting (`+"`dump all`"+`, including defaults)
   exec     Send one CLI command verbatim and print the reply
   get      Print one setting's value
   info     Print FC metadata (board, firmware, craft, …)
@@ -95,7 +105,7 @@ func cmdBackup(args []string) int {
 		return exitUsage
 	}
 
-	body, _, err := pullDump(*port)
+	body, _, err := pullDump(*port, "diff all")
 	if err != nil {
 		return reportFCErr(err)
 	}
@@ -159,25 +169,306 @@ func sanitize(s string) string {
 	return b.String()
 }
 
-// ----- dump -----
+// ----- diff / dump -----
+//
+// `bfctl diff` runs the FC's `diff all` (only non-default settings).
+// `bfctl dump` runs the FC's `dump all` (every setting, including defaults).
+// Both print the FC's reply verbatim. The `defaults nosave` prefix that
+// Configurator adds when saving a backup file lives only in `formatBackup`,
+// which `bfctl backup` calls — neither diff nor dump wrap their output.
+
+func cmdDiff(args []string) int {
+	return runShowCmd("diff", "diff all", args)
+}
 
 func cmdDump(args []string) int {
-	fs := flag.NewFlagSet("dump", flag.ContinueOnError)
+	return runShowCmd("dump", "dump all", args)
+}
+
+// runShowCmd is the shared body of `bfctl diff` and `bfctl dump`: parse
+// flags, pull the body via the given CLI command, print it.
+func runShowCmd(name, cliCmd string, args []string) int {
+	fs := flag.NewFlagSet(name, flag.ContinueOnError)
 	port := fs.String("port", "", "serial device path (default: auto-detect)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
-
-	body, _, err := pullDump(*port)
+	body, _, err := pullDump(*port, cliCmd)
 	if err != nil {
 		return reportFCErr(err)
 	}
-	out := formatBackup(body)
-	fmt.Print(out)
-	if !strings.HasSuffix(out, "\n") {
+	fmt.Print(body)
+	if !strings.HasSuffix(body, "\n") {
 		fmt.Println()
 	}
 	return exitOK
+}
+
+// ----- cli -----
+
+// cmdCLI opens an interactive Betaflight CLI session: read a line from
+// stdin, send it via Session.RunWith with REPL-tuned timeouts, print the
+// reply, loop until EOF or a quit/exit/q line.
+//
+// `exit` is treated as a REPL-quit signal, not forwarded to the FC. Sending
+// `exit` to Betaflight reboots it, which is almost never what someone typing
+// into a REPL wants. Anyone who actually wants to reboot can do
+// `bfctl exec exit`.
+//
+// Reboot-causing commands the FC accepts (`save`, `bl`, `factory_reset`,
+// `defaults`) tear the USB device down mid-reply. RunWith returns the
+// partial reply along with the read error; cli prints what it got, notes
+// the disconnect on stderr, and exits 0.
+//
+// On a TTY, line editing (history via up/down arrow, tab completion of
+// top-level commands, Ctrl-C to cancel a line) is provided by peterh/liner.
+// History persists across sessions in ~/.bfctl_history. On a pipe the path
+// degrades to a plain bufio.Scanner — fewer features, but `printf … | bfctl
+// cli` and shell redirection both still work.
+func cmdCLI(args []string) int {
+	fs := flag.NewFlagSet("cli", flag.ContinueOnError)
+	port := fs.String("port", "", "serial device path (default: auto-detect)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: bfctl cli")
+		return exitUsage
+	}
+
+	path, err := fc.Resolve(*port)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	sess, err := fc.Open(path)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	// Prompt rendering and line editing are gated on stdout: piping input
+	// in is fine, but redirecting output should keep stdout free of "# "
+	// lines and skip the raw-mode terminal entirely.
+	if isCharDevice(os.Stdout) {
+		return runCLIInteractive(sess, path)
+	}
+	return runCLIPiped(sess)
+}
+
+// runCLIPiped is the non-TTY path: a plain bufio.Scanner, no prompts, no
+// history, no completion. Suitable for `printf '…' | bfctl cli` and for
+// scripts that pipe a sequence of commands.
+func runCLIPiped(sess *fc.Session) int {
+	scanner := bufio.NewScanner(os.Stdin)
+	// Default 64 KB buffer truncates anything resembling a `diff all`
+	// paste. Match the dump parser's 1 MB ceiling.
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	for scanner.Scan() {
+		cont, _ := dispatchCLILine(sess, scanner.Text())
+		if !cont {
+			break
+		}
+	}
+	return exitOK
+}
+
+// runCLIInteractive is the TTY path. peterh/liner provides:
+//   - up/down arrow → history (in-memory + persisted to ~/.bfctl_history)
+//   - tab → complete top-level command names harvested from `help`
+//   - Ctrl-C → cancel the current line and re-prompt (loop continues)
+//   - Ctrl-D on an empty line → EOF, exit cleanly
+func runCLIInteractive(sess *fc.Session, path string) int {
+	l := liner.NewLiner()
+	defer func() { _ = l.Close() }()
+	l.SetCtrlCAborts(true)
+
+	cmds := harvestCLICommands(sess)
+	l.SetCompleter(func(line string) []string {
+		return cliCompletions(line, cmds)
+	})
+
+	historyPath := cliHistoryPath()
+	if historyPath != "" {
+		if f, err := os.Open(historyPath); err == nil {
+			_, _ = l.ReadHistory(f)
+			_ = f.Close()
+		}
+	}
+
+	fmt.Fprintf(os.Stderr, "bfctl: connected to %s — type 'quit' or Ctrl-D to disconnect\n", path)
+
+	rc := exitOK
+LOOP:
+	for {
+		input, err := l.Prompt("bf> ")
+		switch {
+		case err == io.EOF:
+			fmt.Fprintln(os.Stderr)
+			break LOOP
+		case errors.Is(err, liner.ErrPromptAborted):
+			// Ctrl-C: discard the current line, prompt again.
+			continue
+		case err != nil:
+			fmt.Fprintln(os.Stderr, "bfctl: prompt:", err)
+			rc = exitGeneric
+			break LOOP
+		}
+		if strings.TrimSpace(input) != "" {
+			l.AppendHistory(input)
+		}
+		cont, _ := dispatchCLILine(sess, input)
+		if !cont {
+			break
+		}
+	}
+
+	if historyPath != "" {
+		if f, err := os.Create(historyPath); err == nil {
+			_, _ = l.WriteHistory(f)
+			_ = f.Close()
+		}
+	}
+	return rc
+}
+
+// dispatchCLILine processes one line of input. Returns (continueLoop,
+// disconnect): continueLoop is false when the user typed quit/exit/q or the
+// FC disconnected mid-reply (reboot-causing command).
+func dispatchCLILine(sess *fc.Session, raw string) (cont, disconnected bool) {
+	line := strings.TrimSpace(raw)
+	// Tolerate paste-back of either prompt style: our own `bf> …` lines
+	// or the Configurator's `# …` transcript format.
+	for _, prefix := range []string{"bf> ", "# "} {
+		if strings.HasPrefix(line, prefix) {
+			line = strings.TrimSpace(line[len(prefix):])
+			break
+		}
+	}
+	if line == "" {
+		return true, false
+	}
+	if line == "quit" || line == "q" || line == "exit" {
+		return false, false
+	}
+	reply, err := sess.RunWith(line, 5*time.Second, 400*time.Millisecond)
+	reply = strings.TrimRight(reply, " \t\r\n")
+	if reply != "" {
+		fmt.Println(reply)
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bfctl:", err, "(FC disconnected)")
+		return false, true
+	}
+	return true, false
+}
+
+// cliHistoryPath returns ~/.bfctl_history, or "" if the home dir can't be
+// resolved (in which case we silently skip history persistence).
+func cliHistoryPath() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	return filepath.Join(home, ".bfctl_history")
+}
+
+// fallbackCLICommands is the static command list used when `help` parsing
+// fails (FC disconnected, garbled output, etc.). Curated from a recent
+// Betaflight build; not exhaustive.
+var fallbackCLICommands = []string{
+	"adjrange", "aux", "batch", "beacon", "beeper", "bind_rx", "bl",
+	"board_name", "color", "defaults", "diff", "dma", "dump", "exit",
+	"feature", "get", "help", "led", "manufacturer_id", "map", "mcu_id",
+	"mixer", "mmix", "mode_color", "motor", "msc", "play_sound", "profile",
+	"rateprofile", "resource", "rxfail", "rxrange", "save", "serial",
+	"servo", "set", "smix", "status", "tasks", "timer", "version", "vtx",
+	"vtxtable",
+}
+
+// harvestCLICommands runs `help` against the live FC and parses out the
+// top-level command names. The Betaflight `help` output uses one indented
+// line per command:
+//
+//	adjrange - configure adjustment ranges
+//	    <index> <unused> <range channel> ...
+//	aux - configure modes
+//	    <index> <mode> <aux> <start> <end>
+//
+// Every non-indented line is a command; the first whitespace-separated
+// token is its name. We tolerate noise: if fewer than 5 commands parse
+// out, fall back to the static list rather than crippling completion.
+func harvestCLICommands(sess *fc.Session) []string {
+	body, err := sess.RunWith("help", 5*time.Second, 400*time.Millisecond)
+	if err != nil || body == "" {
+		return fallbackCLICommands
+	}
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		if line == "" {
+			continue
+		}
+		if line[0] == ' ' || line[0] == '\t' {
+			continue // argument hint line
+		}
+		fields := strings.Fields(line)
+		if len(fields) == 0 {
+			continue
+		}
+		name := fields[0]
+		if !isCommandName(name) {
+			continue
+		}
+		out = append(out, name)
+	}
+	if len(out) < 5 {
+		return fallbackCLICommands
+	}
+	sort.Strings(out)
+	return out
+}
+
+// isCommandName accepts only [a-z0-9_]+, which matches every Betaflight
+// CLI command name and rejects punctuation, numbers, headers, etc.
+func isCommandName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9':
+		case r == '_':
+		default:
+			return false
+		}
+	}
+	return true
+}
+
+// cliCompletions returns prefix-matched candidates for the first word of
+// the line. Multi-word completion (set <key>, get <key>) is intentionally
+// not done yet — the full key list isn't cached and a per-tab dump is too
+// slow.
+func cliCompletions(line string, cmds []string) []string {
+	if strings.ContainsAny(line, " \t") {
+		return nil
+	}
+	var matches []string
+	for _, c := range cmds {
+		if strings.HasPrefix(c, line) {
+			matches = append(matches, c)
+		}
+	}
+	return matches
+}
+
+// isCharDevice reports whether f is connected to a terminal.
+func isCharDevice(f *os.File) bool {
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
 }
 
 // ----- exec -----
@@ -246,7 +537,7 @@ func cmdGet(args []string) int {
 	}
 	key := fs.Arg(0)
 
-	body, _, err := pullDump(*port)
+	body, _, err := pullDump(*port, "diff all")
 	if err != nil {
 		return reportFCErr(err)
 	}
@@ -270,7 +561,7 @@ func cmdInfo(args []string) int {
 		return exitUsage
 	}
 
-	body, path, err := pullDump(*port)
+	body, path, err := pullDump(*port, "diff all")
 	if err != nil {
 		return reportFCErr(err)
 	}
@@ -394,9 +685,9 @@ func cmdPorts(args []string) int {
 
 // ----- shared FC plumbing -----
 
-// pullDump opens a session, runs `diff all`, and returns the body and the
-// device path used.
-func pullDump(explicitPort string) (body, path string, err error) {
+// pullDump opens a session, runs the given Betaflight CLI command (typically
+// `diff all` or `dump all`), and returns the body plus the device path used.
+func pullDump(explicitPort, cliCmd string) (body, path string, err error) {
 	path, err = fc.Resolve(explicitPort)
 	if err != nil {
 		return "", "", err
@@ -406,7 +697,7 @@ func pullDump(explicitPort string) (body, path string, err error) {
 		return "", path, err
 	}
 	defer func() { _ = sess.Close() }()
-	body, err = sess.Run("diff all")
+	body, err = sess.Run(cliCmd)
 	if err != nil {
 		return "", path, err
 	}

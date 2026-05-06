@@ -27,11 +27,15 @@ internal/dump/dump.go  — parse craft_name, board_name, etc. out of a `diff all
 
 `internal/dump/dump_test.go` carries an inline synthetic `diff all` fixture. Real captured dumps from the user's drones are gitignored (`air65.txt`, `BTFL_cli_backup_*.txt`) — do not check them in.
 
-Subcommands: `backup`, `dump`, `exec`, `get`, `info`, `ports`, `set`, `version`. `cli` and `restore` are reserved for future work.
+Subcommands: `backup`, `cli`, `diff`, `dump`, `exec`, `get`, `info`, `ports`, `set`, `version`. `restore` is reserved for future work.
+
+`diff` and `dump` are thin wrappers around the FC's commands of the same name. `bfctl diff` runs `diff all` (non-defaults only); `bfctl dump` runs `dump all` (everything). Both print the FC's reply verbatim — neither prepends `defaults nosave`. That backup-file convention lives in `formatBackup`, used only by `bfctl backup`. Naming rule: when a subcommand maps 1:1 onto an FC CLI command, its name should match the FC's name; otherwise call it something else and document the deviation here.
 
 `set` writes a single CLI `set` line to the FC and (by default) follows it with `save`. `save` reboots the FC — that is the only way Betaflight persists configuration changes. `--no-save` opts out for cases where you want to chain multiple sets manually.
 
-`exec` is the catch-all for any other CLI command (`status`, `feature SOFTSERIAL`, `save`, `defaults`, …). It writes one line, prints the reply, and tolerates the post-write disconnect that comes with reboot-causing commands (save/exit/bl/factory_reset). It does **not** parse the reply or auto-save — that's a job for dedicated subcommands.
+`exec` is the catch-all for any other CLI command (`status`, `feature SOFTSERIAL`, `save`, `defaults`, …). It writes one line, prints the reply, and tolerates the post-write disconnect that comes with reboot-causing commands (save/exit/bl/factory_reset). It does **not** parse the reply or auto-save — that's a job for dedicated subcommands. Many "alias-shaped" subcommands (anything that's just `send fixed CLI line, print reply`) deliberately don't get promoted; if you reach for one, ask whether `bfctl exec <fc command>` would do.
+
+`cli` is the interactive variant of `exec`: open the session once, read a line from stdin, send it, print the reply, repeat. Built on `(*Session).RunWith` with a snappier 400 ms idle window so each command doesn't pay the 1.5 s end-of-reply wait that `Run` uses for `diff all`. On a TTY, line editing comes from `github.com/peterh/liner`: up/down history (persisted to `~/.bfctl_history`), tab completion of top-level commands (harvested by parsing `help` output once at startup; falls back to a hardcoded list if the parse yields too few entries), and Ctrl-C cancels the current line. The prompt is `bf> ` (not `# ` — `# ` collides with how Betaflight prefixes comment lines and looked like commented-out shell in scrollback). On a pipe stdin, plain `bufio.Scanner` is used. `exit`/`quit`/`q` and Ctrl-D all close the session locally without rebooting the FC; if a user wants the actual FC `exit` (which reboots), `bfctl exec exit` is the path.
 
 ## Talking to the FC — non-obvious bits
 
