@@ -62,7 +62,7 @@ func main() {
 }
 
 func printUsage(w io.Writer) {
-	fmt.Fprint(w, `bfctl — talk to a Betaflight flight controller over USB.
+	_, _ = fmt.Fprint(w, `bfctl — talk to a Betaflight flight controller over USB.
 
 Usage:
   bfctl <command> [flags]
@@ -285,7 +285,7 @@ func pullDump(explicitPort string) (body, path string, err error) {
 	if err != nil {
 		return "", path, err
 	}
-	defer sess.Close()
+	defer func() { _ = sess.Close() }()
 	body, err = sess.Run("diff all")
 	if err != nil {
 		return "", path, err

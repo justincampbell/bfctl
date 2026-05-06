@@ -6,7 +6,9 @@ A Go CLI for talking to a [Betaflight](https://github.com/betaflight/betaflight)
 
 **Run `make install` after every change.** The user runs the binary directly between turns; the installed copy needs to be current. After any edit to Go source, the Makefile, the goreleaser config, or anything else that affects the built binary, run `make install` and verify it succeeds before reporting the change as done. (`make install` puts `bfctl` and `bfctl@<version>` on `$GOBIN`, so the version lifts directly from `git describe`.)
 
-If the change is documentation-only (`README.md`, `CHANGELOG.md`, etc.), `make install` is not required.
+**Run `make lint` locally before pushing.** Use the Makefile target — never `go vet` alone — so it matches what CI runs (`golangci-lint`). CI failures on lint are avoidable; catch them locally.
+
+If the change is documentation-only (`README.md`, `CHANGELOG.md`, etc.), `make install` and `make lint` are not required.
 
 ## Tech stack
 
@@ -21,8 +23,9 @@ If the change is documentation-only (`README.md`, `CHANGELOG.md`, etc.), `make i
 main.go                — subcommand dispatch + per-command flag parsing
 internal/fc/fc.go      — port discovery + CLI session (Open / Run / Close)
 internal/dump/dump.go  — parse craft_name, board_name, etc. out of a `diff all` body
-air65.txt              — real captured dump used as a fixture by dump_test.go
 ```
+
+`internal/dump/dump_test.go` carries an inline synthetic `diff all` fixture. Real captured dumps from the user's drones are gitignored (`air65.txt`, `BTFL_cli_backup_*.txt`) — do not check them in.
 
 Subcommands: `backup`, `dump`, `get`, `info`, `ports`, `version`. Read-only for now; `cli`, `set`, and `restore` are reserved for future work.
 

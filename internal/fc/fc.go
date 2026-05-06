@@ -273,17 +273,13 @@ func cleanResponse(raw, cmd string) string {
 
 	// Drop the trailing prompt and trailing whitespace.
 	s = strings.TrimRight(s, " \t\r\n")
-	if strings.HasSuffix(s, "\n#") {
-		s = strings.TrimSuffix(s, "\n#")
-	}
+	s = strings.TrimSuffix(s, "\n#")
 	s = strings.TrimRight(s, " \t\r\n")
 
 	// `diff all` ends with "# save configuration\nsave" — the literal
 	// "save" line is a hint the FC prints, not part of the dump.
 	// Configurator strips it.
-	if strings.HasSuffix(s, "\nsave") {
-		s = strings.TrimSuffix(s, "\nsave")
-	}
+	s = strings.TrimSuffix(s, "\nsave")
 	return s
 }
 

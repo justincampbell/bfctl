@@ -10,7 +10,9 @@ permissions:
 
 jobs:
   release:
-    runs-on: ubuntu-latest
+    # macos runner is required because go.bug.st/serial uses CGO with the
+    # IOKit framework on darwin.
+    runs-on: macos-latest
     steps:
       - uses: actions/checkout@v6
         with:

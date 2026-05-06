@@ -1,12 +1,13 @@
 version: 2
 
+# darwin only for now: go.bug.st/serial requires CGO with IOKit on macOS,
+# and cross-compiling other targets from a single runner adds complexity
+# we don't need yet. The original task confirms macOS-only is fine.
 builds:
   - env:
-      - CGO_ENABLED=0
+      - CGO_ENABLED=1
     goos:
-      - linux
       - darwin
-      - windows
     goarch:
       - amd64
       - arm64
@@ -14,10 +15,7 @@ builds:
       - -s -w -X main.version={{.Tag}}
 
 archives:
-  - format_overrides:
-      - goos: windows
-        format: zip
-    files:
+  - files:
       - README.md
       - LICENSE
 
