@@ -241,6 +241,19 @@ func (s *Session) Run(cmd string) (string, error) {
 	return cleanResponse(string(raw), cmd), nil
 }
 
+// Save sends `save`. Betaflight writes the configuration to flash and then
+// reboots — which tears the USB CDC ACM device down mid-reply. Read errors
+// after the write are expected and ignored. Once Save returns the port is
+// effectively invalid; the caller should close it and (if more work is
+// needed) wait for the FC to re-enumerate before opening a new session.
+func (s *Session) Save() error {
+	if _, err := s.port.Write([]byte("save\r\n")); err != nil {
+		return fmt.Errorf("write save: %w", err)
+	}
+	_, _ = s.readUntilSilence(3*time.Second, 500*time.Millisecond)
+	return nil
+}
+
 // Close releases the serial port. We deliberately do NOT send "exit" — that
 // reboots the FC.
 func (s *Session) Close() error {

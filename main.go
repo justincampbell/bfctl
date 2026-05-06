@@ -50,6 +50,8 @@ func main() {
 		os.Exit(cmdInfo(os.Args[2:]))
 	case "ports":
 		os.Exit(cmdPorts(os.Args[2:]))
+	case "set":
+		os.Exit(cmdSet(os.Args[2:]))
 	case "version", "--version", "-v":
 		fmt.Println("bfctl", version)
 	case "help", "--help", "-h":
@@ -73,6 +75,7 @@ Commands:
   get      Print one setting's value
   info     Print FC metadata (board, firmware, craft, …)
   ports    List detected Betaflight FCs
+  set      Write a setting and persist it (reboots the FC)
   version  Print version
 
 Run 'bfctl <command> --help' for command-specific flags.
@@ -240,6 +243,68 @@ func cmdInfo(args []string) int {
 	fmt.Printf("Firmware:   %s\n", info.Firmware)
 	fmt.Printf("Craft:      %s\n", info.CraftName)
 	fmt.Printf("Pilot:      %s\n", info.PilotName)
+	return exitOK
+}
+
+// ----- set -----
+
+// cmdSet writes a single CLI `set` line to the FC and (by default) persists
+// it via `save`. Anything after the flags is joined with a single space and
+// prepended with `set `, so all of these forward identically to the CLI:
+//
+//	bfctl set pilot_name = Maverick
+//	bfctl set pilot_name=Maverick
+//	bfctl set craft_name = "My Drone"
+//
+// On success Betaflight replies "<key> set to <value>" — we surface that to
+// stdout. Any other reply is treated as a failure (exit 1) so scripts can
+// branch on it.
+func cmdSet(args []string) int {
+	fs := flag.NewFlagSet("set", flag.ContinueOnError)
+	port := fs.String("port", "", "serial device path (default: auto-detect)")
+	noSave := fs.Bool("no-save", false, "don't run `save` after the set (change is lost on reboot)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "usage: bfctl set <key> = <value>")
+		return exitUsage
+	}
+	cmd := "set " + strings.Join(fs.Args(), " ")
+
+	path, err := fc.Resolve(*port)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	sess, err := fc.Open(path)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	reply, err := sess.Run(cmd)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	reply = strings.TrimSpace(reply)
+	if reply != "" {
+		fmt.Println(reply)
+	}
+	if !strings.Contains(reply, " set to ") {
+		fmt.Fprintln(os.Stderr, "bfctl: FC did not confirm the set")
+		return exitGeneric
+	}
+
+	if *noSave {
+		fmt.Fprintln(os.Stderr, "bfctl: --no-save: change will be lost on reboot")
+		return exitOK
+	}
+
+	if err := sess.Save(); err != nil {
+		fmt.Fprintln(os.Stderr, "bfctl: save:", err)
+		return exitGeneric
+	}
+	fmt.Fprintln(os.Stderr, "bfctl: saved (FC is rebooting)")
 	return exitOK
 }
 

@@ -33,6 +33,8 @@ bfctl get craft_name         # print one setting
 bfctl info                   # print FC metadata
 bfctl info --json            # …as JSON
 bfctl ports                  # list detected FCs
+bfctl set pilot_name = Maverick   # write a setting and save (reboots the FC)
+bfctl set pilot_name = Maverick --no-save   # …or set without persisting
 ```
 
 If more than one FC is plugged in, pass `--port`:
