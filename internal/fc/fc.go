@@ -10,6 +10,8 @@ import (
 
 	"go.bug.st/serial"
 	"go.bug.st/serial/enumerator"
+
+	"github.com/justincampbell/bfctl/internal/msp"
 )
 
 // ErrNoFC means no flight controller was found on any USB serial port.
@@ -168,7 +170,7 @@ func Open(path string) (*Session, error) {
 
 	s := &Session{port: port, path: path}
 
-	if err := s.drain(150 * time.Millisecond); err != nil {
+	if err := drainPort(port, 150*time.Millisecond); err != nil {
 		_ = port.Close()
 		return nil, err
 	}
@@ -180,7 +182,7 @@ func Open(path string) (*Session, error) {
 	//     a previous session that closed without exiting). The MSP frame
 	//     is harmless garbage typed at the prompt; drain and continue.
 	//   - empty                          → link broken / port held elsewhere.
-	mspFrame := []byte{'$', 'M', '<', 0x00, 0x01, 0x01}
+	mspFrame := msp.Request(msp.CmdAPIVersion, nil)
 	if _, err := port.Write(mspFrame); err != nil {
 		_ = port.Close()
 		return nil, fmt.Errorf("write MSP probe: %w", err)
@@ -311,21 +313,6 @@ func (s *Session) readUntilSilence(total, idle time.Duration) ([]byte, error) {
 	}
 }
 
-// drain reads and discards anything currently buffered on the port. Used at
-// open time to flush MSP frames before we try to enter CLI mode.
-func (s *Session) drain(window time.Duration) error {
-	if err := s.port.SetReadTimeout(50 * time.Millisecond); err != nil {
-		return err
-	}
-	deadline := time.Now().Add(window)
-	buf := make([]byte, 4096)
-	for time.Now().Before(deadline) {
-		if _, err := s.port.Read(buf); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 // cleanResponse strips the echoed command at the start, the trailing "# "
 // prompt at the end, and (if present) a trailing "save" recommendation line

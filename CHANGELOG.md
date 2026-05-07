@@ -10,5 +10,6 @@
 - `exec` — send one CLI command verbatim and print the reply. Catch-all for any FC CLI command without a dedicated subcommand. Tolerates the post-write disconnect from reboot-causing commands (`save`, `exit`, `bl`, `factory_reset`).
 - `get` — print a single setting's value.
 - `info` — print FC metadata (board, MCU, firmware, craft, pilot). Falls back to the `# name:` / `# pilot:` header lines on firmware that omits `set craft_name`/`set pilot_name`. `--json` supported.
+- `msp` — query Betaflight MSP commands directly, before CLI mode is entered. `bfctl msp` scans every supported code; `bfctl msp <code|name>` runs a single query. Decoded human-readable output for `MSP_API_VERSION`, `MSP_FC_VARIANT`, `MSP_FC_VERSION`, `MSP_NAME`, `MSP_BOXNAMES`, `MSP_PIDNAMES`, `MSP_BOXIDS`; raw hex for everything else. Handles MSP v1 jumbo frames (`$M> 0xFF code size_lo size_hi …`) so replies larger than 254 bytes (BOXNAMES, PIDNAMES, BOARD_INFO, …) parse correctly. Surfaces `ErrMSPInCLIMode` with a hint when the FC is stuck in CLI mode from a prior session. `--json` and `--timeout` supported.
 - `ports` — list detected Betaflight FCs. Matches both STM32 (`Betaflight …` Product, VID `0x0483`) and AT32 (`AT32 Virtual Com Port` Product, VID `0x2E3C`) targets. `--json` supported.
 - `set` — write a setting and (by default) `save`. `--no-save` opts out.

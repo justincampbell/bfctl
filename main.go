@@ -7,6 +7,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -22,6 +24,7 @@ import (
 
 	"github.com/justincampbell/bfctl/internal/dump"
 	"github.com/justincampbell/bfctl/internal/fc"
+	"github.com/justincampbell/bfctl/internal/msp"
 )
 
 var version = "dev"
@@ -54,6 +57,8 @@ func main() {
 		os.Exit(cmdDump(os.Args[2:]))
 	case "exec":
 		os.Exit(cmdExec(os.Args[2:]))
+	case "msp":
+		os.Exit(cmdMSP(os.Args[2:]))
 	case "get":
 		os.Exit(cmdGet(os.Args[2:]))
 	case "info":
@@ -87,6 +92,7 @@ Commands:
   exec     Send one CLI command verbatim and print the reply
   get      Print one setting's value
   info     Print FC metadata (board, firmware, craft, …)
+  msp      Query Betaflight MSP commands (single code or full scan)
   ports    List detected Betaflight FCs
   set      Write a setting and persist it (reboots the FC)
   version  Print version
@@ -657,6 +663,171 @@ func cmdSet(args []string) int {
 	}
 	fmt.Fprintln(os.Stderr, "bfctl: saved (FC is rebooting)")
 	return exitOK
+}
+
+// ----- msp -----
+
+// cmdMSP runs raw MSP v1 queries against the FC. Three forms:
+//
+//	bfctl msp                — scan codes 1..MaxScanCode and print all replies
+//	bfctl msp <code>         — query one code by number (decimal or 0x… hex)
+//	bfctl msp <name>         — same, but resolve a Betaflight name (e.g. boxnames)
+//
+// Unlike every other subcommand, msp does NOT enter CLI mode. The FC speaks
+// MSP at port-open time; once `#` has been sent, MSP queries no longer work
+// until the FC reboots. If queries time out consistently, power-cycle the FC.
+func cmdMSP(args []string) int {
+	fs := flag.NewFlagSet("msp", flag.ContinueOnError)
+	port := fs.String("port", "", "serial device path (default: auto-detect)")
+	asJSON := fs.Bool("json", false, "emit JSON")
+	timeout := fs.Duration("timeout", 500*time.Millisecond, "per-query timeout")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+
+	path, err := fc.Resolve(*port)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	sess, err := fc.OpenMSP(path)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	if fs.NArg() == 0 {
+		return mspScan(sess, *timeout, *asJSON)
+	}
+	code, err := resolveMSPCode(fs.Arg(0))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bfctl:", err)
+		return exitUsage
+	}
+	return mspQueryOne(sess, code, *timeout, *asJSON)
+}
+
+// resolveMSPCode accepts a decimal number, a 0x-prefixed hex number, or an
+// MSP name (case-insensitive, with or without the "MSP_" prefix).
+func resolveMSPCode(s string) (uint8, error) {
+	if n, err := strconv.ParseUint(s, 0, 8); err == nil {
+		return uint8(n), nil
+	}
+	want := strings.ToUpper(s)
+	if !strings.HasPrefix(want, "MSP_") {
+		want = "MSP_" + want
+	}
+	for code := uint8(1); code <= msp.MaxScanCode; code++ {
+		if strings.EqualFold(msp.Name(code), want) {
+			return code, nil
+		}
+	}
+	return 0, fmt.Errorf("unknown MSP code or name: %q", s)
+}
+
+// mspResult is the shape of one row in scan output (and one record in JSON).
+type mspResult struct {
+	Code    int    `json:"code"`
+	Name    string `json:"name"`
+	Size    int    `json:"size"`
+	Hex     string `json:"hex,omitempty"`
+	Decoded string `json:"decoded,omitempty"`
+}
+
+func makeMSPResult(resp msp.Response) mspResult {
+	return mspResult{
+		Code:    int(resp.Code),
+		Name:    msp.Name(resp.Code),
+		Size:    len(resp.Payload),
+		Hex:     hex.EncodeToString(resp.Payload),
+		Decoded: msp.Decode(resp.Code, resp.Payload),
+	}
+}
+
+func mspQueryOne(sess *fc.MSPSession, code uint8, timeout time.Duration, asJSON bool) int {
+	resp, err := sess.Query(code, nil, timeout)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bfctl:", err)
+		return exitGeneric
+	}
+	if !resp.OK() {
+		fmt.Fprintf(os.Stderr, "bfctl: FC rejected MSP %d (%s)\n", code, msp.Name(code))
+		return exitGeneric
+	}
+	r := makeMSPResult(resp)
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(r)
+		return exitOK
+	}
+	printMSPResult(r)
+	return exitOK
+}
+
+func mspScan(sess *fc.MSPSession, timeout time.Duration, asJSON bool) int {
+	var results []mspResult
+	for code := uint8(1); code <= msp.MaxScanCode; code++ {
+		resp, err := sess.Query(code, nil, timeout)
+		if err != nil || !resp.OK() {
+			// Timeout or FC error response: code isn't supported on this
+			// firmware. Skip silently — that's the expected case for most
+			// codes, the scan would otherwise be 199 lines of noise.
+			continue
+		}
+		results = append(results, makeMSPResult(resp))
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(results)
+		return exitOK
+	}
+	for _, r := range results {
+		printMSPResult(r)
+	}
+	fmt.Fprintf(os.Stderr, "bfctl: %d/%d MSP codes responded\n", len(results), msp.MaxScanCode)
+	return exitOK
+}
+
+// printMSPResult emits one human-readable line. Layout:
+//
+//	NNN MSP_NAME (size B)  decoded text
+//	    hex bytes…
+//
+// The hex line is only printed when there's a payload; the decoded line is
+// only printed when Decode() returned something. For codes with neither, the
+// header line still goes out so the reader can see the code was supported.
+func printMSPResult(r mspResult) {
+	fmt.Printf("%3d  %-30s  %d B", r.Code, r.Name, r.Size)
+	if r.Decoded != "" {
+		fmt.Printf("  %s", r.Decoded)
+	}
+	fmt.Println()
+	if r.Hex != "" {
+		fmt.Printf("     %s\n", spacedHex(r.Hex))
+	}
+}
+
+// spacedHex inserts a space every two hex chars, capped at 32 bytes per
+// line so wide payloads don't blow past 80 columns.
+func spacedHex(h string) string {
+	const bytesPerLine = 32
+	var b strings.Builder
+	for i := 0; i < len(h); i += 2 {
+		if i > 0 {
+			if (i/2)%bytesPerLine == 0 {
+				b.WriteString("\n     ")
+			} else {
+				b.WriteByte(' ')
+			}
+		}
+		end := i + 2
+		if end > len(h) {
+			end = len(h)
+		}
+		b.WriteString(h[i:end])
+	}
+	return b.String()
 }
 
 // ----- ports -----

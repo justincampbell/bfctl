@@ -39,7 +39,12 @@ bfctl set pilot_name = Maverick --no-save   # …or set without persisting
 bfctl exec status                # any other CLI command, reply printed verbatim
 bfctl exec feature SOFTSERIAL    # toggle a feature
 bfctl cli                        # interactive Betaflight CLI session (history + tab completion)
+bfctl msp                        # scan every supported MSP command and print replies
+bfctl msp boxnames               # query one MSP code (by name or number) and decode it
+bfctl msp 116 --json             # …same, JSON output
 ```
+
+`bfctl msp` requires the FC to be in MSP mode (freshly booted). If you've already run `bfctl set` / `bfctl exec` / `bfctl cli` since power-up, the FC stays in CLI mode — power-cycle before running MSP queries.
 
 If more than one FC is plugged in, pass `--port`:
 
