@@ -47,26 +47,71 @@ const MaxScanCode = 199
 // it's safe to scan up to MaxScanCode by default.
 const SafeScanCeiling = MaxScanCode
 
-// Denylist is the set of MSP codes scan mode refuses to send. Each entry
-// is an "in" handler that, when called with a 0-byte payload (which is
-// what scan sends), would reboot the FC, wipe storage, or corrupt config.
-// 188 is the proven brick; 68 desyncs the scan (FC reboots mid-loop, so
-// no replies follow until reopen); 72 silently erases blackbox flash;
-// the others are zero-cost adds — a scan can't read writers anyway.
-// Single-code queries (`bfctl msp 188`) bypass this for opt-in research.
+// Denylist is every "in message" MSP code in 1..MaxScanCode — i.e. every
+// writer reachable by a default scan. The scan sends a 0-byte payload,
+// and Betaflight's sbufReadU8 doesn't bounds-check (streambuf.c:98), so
+// a writer pulls uninitialized bytes from past the MSP RX buffer into
+// whatever config field it targets. The damage ranges from invisible
+// (corrupt motor PWM trim) to user-visible (LEDs go red, motor mixer
+// scrambled) to catastrophic (188 MSP_SET_OSD_CANVAS persists garbage
+// canvas dims via writeEEPROM() + systemReset() and bricks the FC).
 //
-// Source citations are in betaflight/src/main/msp/msp.c (line numbers as
-// of upstream main 407f3f9):
+// Rather than enumerate which corruptions are "safe enough", we refuse
+// every writer in scan range. A scan can't read anything useful from a
+// writer anyway — the FC either replies 0 bytes or rejects with an error
+// frame — so denylisting them costs zero coverage. Single-code queries
+// (`bfctl msp 188`) bypass this for opt-in research and supply a real
+// payload via stdin if the user wants to actually exercise the writer.
 //
-//	 68 MSP_REBOOT                — line 2417: registers mspRebootFn; FC reboots after a 1-byte reply
+// Highlight cases (line numbers in betaflight/src/main/msp/msp.c, upstream
+// main 407f3f9):
+//
+//	 47 MSP_SET_LED_COLORS        — line 4182: corrupts LED color array → LEDs go red until reboot
+//	 68 MSP_REBOOT                — line 2417: registers mspRebootFn; FC reboots mid-scan, desyncs the loop
 //	 72 MSP_DATAFLASH_ERASE       — line 3912: unconditional blackboxEraseAll()
-//	141 MSP_SET_SIMPLIFIED_TUNING — line 3855: garbage→PID profile + gyro filter
-//	181 MSP_SET_OSD_VIDEO_CONFIG  — protocol-defined writer (no current handler)
-//	183 MSP_COPY_PROFILE          — line 2873: pidCopyProfile(garbage, garbage)
-//	185 MSP_SET_BEEPER_CONFIG     — line 3972: garbage→beeper_off_flags
-//	186 MSP_SET_TX_INFO           — line 4251: garbage→RSSI MSP
-//	188 MSP_SET_OSD_CANVAS        — line 4702: writeEEPROM() + systemReset()
-var Denylist = []uint8{68, 72, 141, 181, 183, 185, 186, 188}
+//	188 MSP_SET_OSD_CANVAS        — line 4702: writeEEPROM() + systemReset() — proven brick on AT32
+//
+// The full list is the set of "in message" codes in msp_protocol.h with
+// number ≤ MaxScanCode.
+var Denylist = []uint8{
+	11,  // MSP_SET_NAME
+	33,  // MSP_SET_BATTERY_CONFIG
+	35,  // MSP_SET_MODE_RANGE
+	37,  // MSP_SET_FEATURE_CONFIG
+	39,  // MSP_SET_BOARD_ALIGNMENT_CONFIG
+	41,  // MSP_SET_CURRENT_METER_CONFIG
+	43,  // MSP_SET_MIXER_CONFIG
+	45,  // MSP_SET_RX_CONFIG
+	47,  // MSP_SET_LED_COLORS
+	49,  // MSP_SET_LED_STRIP_CONFIG
+	51,  // MSP_SET_RSSI_CONFIG
+	53,  // MSP_SET_ADJUSTMENT_RANGE
+	55,  // MSP_SET_CF_SERIAL_CONFIG
+	57,  // MSP_SET_VOLTAGE_METER_CONFIG
+	60,  // MSP_SET_PID_CONTROLLER
+	62,  // MSP_SET_ARMING_CONFIG
+	65,  // MSP_SET_RX_MAP
+	68,  // MSP_REBOOT
+	72,  // MSP_DATAFLASH_ERASE
+	76,  // MSP_SET_FAILSAFE_CONFIG
+	78,  // MSP_SET_RXFAIL_CONFIG
+	81,  // MSP_SET_BLACKBOX_CONFIG
+	83,  // MSP_SET_TRANSPONDER_CONFIG
+	85,  // MSP_SET_OSD_CONFIG
+	87,  // MSP_OSD_CHAR_WRITE
+	89,  // MSP_SET_VTX_CONFIG
+	91,  // MSP_SET_ADVANCED_CONFIG
+	93,  // MSP_SET_FILTER_CONFIG
+	95,  // MSP_SET_PID_ADVANCED
+	97,  // MSP_SET_SENSOR_CONFIG
+	99,  // MSP_SET_ARMING_DISABLED
+	141, // MSP_SET_SIMPLIFIED_TUNING
+	181, // MSP_SET_OSD_VIDEO_CONFIG
+	183, // MSP_COPY_PROFILE
+	185, // MSP_SET_BEEPER_CONFIG
+	186, // MSP_SET_TX_INFO
+	188, // MSP_SET_OSD_CANVAS
+}
 
 // IsDenylisted reports whether a code is in Denylist.
 func IsDenylisted(code uint8) bool {
