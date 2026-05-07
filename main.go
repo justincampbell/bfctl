@@ -65,6 +65,8 @@ func main() {
 		os.Exit(cmdInfo(os.Args[2:]))
 	case "ports":
 		os.Exit(cmdPorts(os.Args[2:]))
+	case "restore":
+		os.Exit(cmdRestore(os.Args[2:]))
 	case "set":
 		os.Exit(cmdSet(os.Args[2:]))
 	case "version", "--version", "-v":
@@ -94,6 +96,7 @@ Commands:
   info     Print FC metadata (board, firmware, craft, …)
   msp      Query Betaflight MSP commands (single code or full scan)
   ports    List detected Betaflight FCs
+  restore  Replay a backup file onto the FC (reboots after save)
   set      Write a setting and persist it (reboots the FC)
   version  Print version
 
@@ -603,6 +606,237 @@ func cmdInfo(args []string) int {
 	return exitOK
 }
 
+// ----- restore -----
+
+// cmdRestore replays a backup file onto the FC line by line, mirroring how
+// Betaflight Configurator's CLI tab does it. Format expected: the
+// Configurator/`bfctl backup` output — `defaults nosave` prefix, FC `diff
+// all` body (with its own embedded `batch start`), no trailing `batch end`
+// or `save`. We append `batch end` ourselves, and by default append a
+// `save` (which reboots the FC into the new config). `--no-save` skips the
+// save (changes live in RAM only, lost on next reboot).
+//
+// We send line-by-line with a small inter-line delay rather than as one
+// bulk write because the FC's USB CDC RX buffer fills up on bulk transfers
+// and the resulting flow-control pauses can run longer than any reasonable
+// silence-detection threshold (observed on LIONBEE_V1: bulk write cut off
+// at line ~23 of 61, FC kept processing in the background, leaving the
+// next bfctl session colliding with leftover state). 15 ms per line, 100
+// ms for `profile`/`rateprofile` selectors — same numbers Configurator
+// uses (LINE_DELAY_MS, PROFILE_COMMAND_DELAY_MS in useMspCliSession.js).
+func cmdRestore(args []string) int {
+	fs := flag.NewFlagSet("restore", flag.ContinueOnError)
+	port := fs.String("port", "", "serial device path (default: auto-detect)")
+	noSave := fs.Bool("no-save", false, "skip the trailing `save` (changes lost on next reboot)")
+	dryRun := fs.Bool("dry-run", false, "print what would be sent; do not open the FC")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+	if fs.NArg() != 1 {
+		fmt.Fprintln(os.Stderr, "usage: bfctl restore <file>")
+		return exitUsage
+	}
+	filePath := fs.Arg(0)
+	body, err := os.ReadFile(filePath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "bfctl:", err)
+		return exitGeneric
+	}
+	if !looksLikeBackup(body) {
+		fmt.Fprintf(os.Stderr, "bfctl: %s does not look like a Betaflight backup (no `batch start` line)\n", filePath)
+		return exitGeneric
+	}
+
+	lines := splitRestoreLines(body)
+	// On AT32 firmware (and possibly others) `diff all` emits `# name: X`
+	// / `# pilot: Y` headers but *not* the corresponding `set craft_name`
+	// / `set pilot_name` lines. Without us supplementing, restoring leaves
+	// craft and pilot at firmware defaults — a silent backup/restore data
+	// loss. Inject the missing `set` lines.
+	lines = injectMissingNameSets(lines)
+	// Append batch end if the file doesn't already have one (Configurator
+	// backups never do).
+	if !linesContain(lines, "batch end") {
+		lines = append(lines, "batch end")
+	}
+
+	if *dryRun {
+		for _, line := range lines {
+			fmt.Println(line)
+		}
+		if !*noSave {
+			fmt.Println("save")
+		}
+		return exitOK
+	}
+
+	path, err := fc.Resolve(*port)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	sess, err := fc.Open(path)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	defer func() { _ = sess.Close() }()
+
+	const (
+		lineDelay    = 15 * time.Millisecond
+		profileDelay = 100 * time.Millisecond
+	)
+	var replies strings.Builder
+	for _, line := range lines {
+		if err := sess.WriteLine(line); err != nil {
+			fmt.Fprintln(os.Stderr, "bfctl: write:", err)
+			return exitGeneric
+		}
+		delay := lineDelay
+		if isProfileSelector(line) {
+			delay = profileDelay
+		}
+		time.Sleep(delay)
+		// Drain whatever the FC has emitted so the kernel/USB CDC buffer
+		// doesn't back up. Short window — we don't *wait* for a reply, we
+		// just take whatever's there.
+		replies.WriteString(sess.DrainAvailable(0))
+	}
+	// Final drain: give the FC time to finish processing batch end and
+	// emit any deferred error messages (Betaflight reports batch errors
+	// only at batch end).
+	replies.WriteString(sess.DrainAvailable(2 * time.Second))
+
+	reply := strings.TrimRight(replies.String(), " \t\r\n")
+	if reply != "" {
+		fmt.Println(reply)
+	}
+	if mentionsRestoreError(reply) {
+		fmt.Fprintln(os.Stderr, "bfctl: FC reported errors during restore (see output above)")
+		return exitGeneric
+	}
+
+	if *noSave {
+		fmt.Fprintln(os.Stderr, "bfctl: --no-save: changes will be lost on next reboot")
+		return exitOK
+	}
+	if err := sess.Save(); err != nil {
+		fmt.Fprintln(os.Stderr, "bfctl: save:", err)
+		return exitGeneric
+	}
+	fmt.Fprintln(os.Stderr, "bfctl: restored (FC is rebooting)")
+	return exitOK
+}
+
+// splitRestoreLines normalises line endings and drops the trailing empty
+// element that strings.Split produces when the file ends in a newline.
+func splitRestoreLines(body []byte) []string {
+	s := strings.ReplaceAll(string(body), "\r\n", "\n")
+	lines := strings.Split(s, "\n")
+	for len(lines) > 0 && lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// linesContain checks whether any non-comment line equals want (after
+// trimming).
+func linesContain(lines []string, want string) bool {
+	for _, line := range lines {
+		if strings.TrimSpace(line) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// injectMissingNameSets reads the file's `# name:` and `# pilot:` header
+// lines and appends `set craft_name = …` / `set pilot_name = …` if those
+// settable forms aren't already present. The injection lands right before
+// `# save configuration` so it's still inside the batch.
+//
+// Why this is needed: on some Betaflight builds (notably AT32 2025.12.x)
+// `diff all` reports the values via header-only and omits the `set` lines.
+// Without us supplementing, a backup→restore round-trip silently drops
+// craft/pilot.
+func injectMissingNameSets(lines []string) []string {
+	headerCraft, hasSetCraft := scanNameHeader(lines, "# name:", "set craft_name")
+	headerPilot, hasSetPilot := scanNameHeader(lines, "# pilot:", "set pilot_name")
+	if (headerCraft == "" || hasSetCraft) && (headerPilot == "" || hasSetPilot) {
+		return lines
+	}
+	// Insert just before the trailing `# save configuration` marker (or
+	// at the end if that marker isn't present).
+	insertAt := len(lines)
+	for i, line := range lines {
+		if strings.TrimSpace(line) == "# save configuration" {
+			insertAt = i
+			break
+		}
+	}
+	var inject []string
+	if headerCraft != "" && !hasSetCraft {
+		inject = append(inject, "set craft_name = "+headerCraft)
+	}
+	if headerPilot != "" && !hasSetPilot {
+		inject = append(inject, "set pilot_name = "+headerPilot)
+	}
+	out := make([]string, 0, len(lines)+len(inject))
+	out = append(out, lines[:insertAt]...)
+	out = append(out, inject...)
+	out = append(out, lines[insertAt:]...)
+	return out
+}
+
+// scanNameHeader returns the value following headerPrefix (e.g. "# name:")
+// and whether a matching `set` line (e.g. "set craft_name") already exists.
+func scanNameHeader(lines []string, headerPrefix, setPrefix string) (string, bool) {
+	var headerVal string
+	var hasSet bool
+	for _, line := range lines {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, headerPrefix) {
+			headerVal = strings.TrimSpace(t[len(headerPrefix):])
+		}
+		if strings.HasPrefix(t, setPrefix+" ") || strings.HasPrefix(t, setPrefix+"=") {
+			hasSet = true
+		}
+	}
+	return headerVal, hasSet
+}
+
+// isProfileSelector returns true for `profile N` / `rateprofile N` lines —
+// these need a longer post-send delay because Betaflight rebuilds derived
+// state when switching profiles.
+func isProfileSelector(line string) bool {
+	t := strings.TrimSpace(line)
+	return strings.HasPrefix(t, "profile ") || strings.HasPrefix(t, "rateprofile ")
+}
+
+// looksLikeBackup is a sanity check: backup files always contain a
+// `batch start` line on its own. Catches the case where someone hands a
+// random text file to `bfctl restore`.
+func looksLikeBackup(body []byte) bool {
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.TrimSpace(line) == "batch start" {
+			return true
+		}
+	}
+	return false
+}
+
+// mentionsRestoreError checks the FC reply for the error markers Betaflight
+// emits when a batch line is rejected. The exact strings vary across
+// firmware; the substrings here match what current Betaflight prints on
+// `Invalid value`, `Unknown`, and the generic `ERROR` markers.
+func mentionsRestoreError(reply string) bool {
+	low := strings.ToLower(reply)
+	for _, needle := range []string{"invalid", "unknown command", "error", "###"} {
+		if strings.Contains(low, needle) {
+			return true
+		}
+	}
+	return false
+}
+
 // ----- set -----
 
 // cmdSet writes a single CLI `set` line to the FC and (by default) persists
@@ -681,6 +915,8 @@ func cmdMSP(args []string) int {
 	port := fs.String("port", "", "serial device path (default: auto-detect)")
 	asJSON := fs.Bool("json", false, "emit JSON")
 	timeout := fs.Duration("timeout", 500*time.Millisecond, "per-query timeout")
+	from := fs.Uint("from", 1, "scan: lowest code to probe")
+	maxCode := fs.Uint("max", uint(msp.MaxScanCode), "scan: highest code to probe")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -696,7 +932,7 @@ func cmdMSP(args []string) int {
 	defer func() { _ = sess.Close() }()
 
 	if fs.NArg() == 0 {
-		return mspScan(sess, *timeout, *asJSON)
+		return mspScan(sess, uint8(*from), uint8(*maxCode), *timeout, *asJSON)
 	}
 	code, err := resolveMSPCode(fs.Arg(0))
 	if err != nil {
@@ -764,10 +1000,20 @@ func mspQueryOne(sess *fc.MSPSession, code uint8, timeout time.Duration, asJSON 
 	return exitOK
 }
 
-func mspScan(sess *fc.MSPSession, timeout time.Duration, asJSON bool) int {
+func mspScan(sess *fc.MSPSession, from, max uint8, timeout time.Duration, asJSON bool) int {
+	if from < 1 {
+		from = 1
+	}
+	if max > msp.MaxScanCode {
+		max = msp.MaxScanCode
+	}
+	if max < from {
+		fmt.Fprintln(os.Stderr, "bfctl: --max < --from")
+		return exitUsage
+	}
 	var results []mspResult
-	for code := uint8(1); code <= msp.MaxScanCode; code++ {
-		resp, err := sess.Query(code, nil, timeout)
+	for code := uint16(from); code <= uint16(max); code++ {
+		resp, err := sess.Query(uint8(code), nil, timeout)
 		if err != nil || !resp.OK() {
 			// Timeout or FC error response: code isn't supported on this
 			// firmware. Skip silently — that's the expected case for most
@@ -785,7 +1031,7 @@ func mspScan(sess *fc.MSPSession, timeout time.Duration, asJSON bool) int {
 	for _, r := range results {
 		printMSPResult(r)
 	}
-	fmt.Fprintf(os.Stderr, "bfctl: %d/%d MSP codes responded\n", len(results), msp.MaxScanCode)
+	fmt.Fprintf(os.Stderr, "bfctl: %d responded in codes %d–%d\n", len(results), from, max)
 	return exitOK
 }
 

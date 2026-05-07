@@ -258,6 +258,47 @@ func (s *Session) RunWith(cmd string, total, idle time.Duration) (string, error)
 	return cleaned, nil
 }
 
+// WriteLine writes one line followed by CRLF. Does not read.
+//
+// Useful for line-by-line replay (e.g. `bfctl restore`) where the caller
+// paces sends with explicit delays and drains echoes separately. Bulk-
+// writing a whole backup file in a single Write tends to stall on USB CDC
+// flow control once the FC's RX FIFO fills, causing mid-stream pauses
+// longer than any reasonable idle threshold.
+func (s *Session) WriteLine(line string) error {
+	if _, err := s.port.Write([]byte(line + "\r\n")); err != nil {
+		return fmt.Errorf("write line: %w", err)
+	}
+	return nil
+}
+
+// DrainAvailable reads everything the FC has queued, with a long initial
+// wait (window) for the first bytes and a short trailing wait for follow-
+// ups. Returns "" if nothing arrived. Never errors — designed for the
+// "I just want to flush echoes" case in replay loops.
+func (s *Session) DrainAvailable(window time.Duration) string {
+	if err := s.port.SetReadTimeout(window); err != nil {
+		return ""
+	}
+	buf := make([]byte, 4096)
+	n, _ := s.port.Read(buf)
+	if n == 0 {
+		return ""
+	}
+	out := append([]byte(nil), buf[:n]...)
+	if err := s.port.SetReadTimeout(20 * time.Millisecond); err != nil {
+		return string(out)
+	}
+	for {
+		n, _ := s.port.Read(buf)
+		if n == 0 {
+			break
+		}
+		out = append(out, buf[:n]...)
+	}
+	return string(out)
+}
+
 // Save sends `save`. Betaflight writes the configuration to flash and then
 // reboots — which tears the USB CDC ACM device down mid-reply. Read errors
 // after the write are expected and ignored. Once Save returns the port is

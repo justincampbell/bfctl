@@ -36,6 +36,9 @@ bfctl info --json            # …as JSON
 bfctl ports                  # list detected FCs
 bfctl set pilot_name = Maverick   # write a setting and save (reboots the FC)
 bfctl set pilot_name = Maverick --no-save   # …or set without persisting
+bfctl restore backup.txt          # replay a Configurator-format backup (reboots after save)
+bfctl restore backup.txt --no-save   # …apply to RAM only (lost on next reboot)
+bfctl restore backup.txt --dry-run   # …print the line stream that would be sent
 bfctl exec status                # any other CLI command, reply printed verbatim
 bfctl exec feature SOFTSERIAL    # toggle a feature
 bfctl cli                        # interactive Betaflight CLI session (history + tab completion)
