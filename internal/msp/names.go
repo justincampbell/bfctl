@@ -22,6 +22,7 @@ const (
 	CmdBoxNames   = 116
 	CmdPIDNames   = 117
 	CmdBoxIDs     = 119
+	CmdUID        = 160
 )
 
 // names is a curated map of MSP v1 codes to their Betaflight names. Used for

@@ -567,6 +567,19 @@ func cmdGet(args []string) int {
 
 // ----- info -----
 
+// cmdInfo prints FC metadata using MSP queries only — it never sends `#`
+// to enter CLI mode. This matters because once the FC has been switched
+// into CLI mode, all subsequent MSP queries fail until the FC reboots
+// (MSP and CLI share one USB CDC parser, and there's no reverse switch).
+// Earlier versions of `info` used the `diff all` CLI path to get every
+// field in one shot; that left the FC in CLI mode and broke any later
+// `bfctl msp` call until power-cycle.
+//
+// One regression vs the old CLI path: `pilot_name` is not exposed by any
+// MSP v1 command (only MSP2_GET_TEXT, which bfctl doesn't speak). The
+// JSON field stays for compatibility but is empty; the human output
+// drops the line entirely. Use `bfctl get pilot_name` if you need it
+// — and remember that command rebooots the MSP↔CLI boundary too.
 func cmdInfo(args []string) int {
 	fs := flag.NewFlagSet("info", flag.ContinueOnError)
 	port := fs.String("port", "", "serial device path (default: auto-detect)")
@@ -575,12 +588,14 @@ func cmdInfo(args []string) int {
 		return exitUsage
 	}
 
-	body, path, err := pullDump(*port, "diff all")
+	path, err := fc.Resolve(*port)
 	if err != nil {
 		return reportFCErr(err)
 	}
-
-	info := dump.Parse(body)
+	info, err := fc.QueryInfo(path)
+	if err != nil {
+		return reportFCErr(err)
+	}
 
 	if *asJSON {
 		out := struct {
@@ -602,7 +617,6 @@ func cmdInfo(args []string) int {
 	fmt.Printf("MCU ID:     %s\n", info.MCUID)
 	fmt.Printf("Firmware:   %s\n", info.Firmware)
 	fmt.Printf("Craft:      %s\n", info.CraftName)
-	fmt.Printf("Pilot:      %s\n", info.PilotName)
 	return exitOK
 }
 
@@ -901,11 +915,17 @@ func cmdSet(args []string) int {
 
 // ----- msp -----
 
-// cmdMSP runs raw MSP v1 queries against the FC. Three forms:
+// cmdMSP runs raw MSP v1 queries against the FC. Four forms:
 //
-//	bfctl msp                — scan codes 1..MaxScanCode and print all replies
-//	bfctl msp <code>         — query one code by number (decimal or 0x… hex)
-//	bfctl msp <name>         — same, but resolve a Betaflight name (e.g. boxnames)
+//	bfctl msp                  — scan codes 1..MaxScanCode and print all replies
+//	bfctl msp <code>           — query one code by number (decimal or 0x… hex)
+//	bfctl msp <name>           — same, but resolve a Betaflight name (e.g. boxnames)
+//	bfctl msp <code|name>...   — query each in turn; exit non-zero if any failed
+//
+// The list form bypasses the denylist (the user named the codes explicitly).
+// JSON output for the list form is an array; for the single-code form it
+// remains a single object so existing scripts that parse `bfctl msp X --json`
+// don't break.
 //
 // Unlike every other subcommand, msp does NOT enter CLI mode. The FC speaks
 // MSP at port-open time; once `#` has been sent, MSP queries no longer work
@@ -934,12 +954,19 @@ func cmdMSP(args []string) int {
 	if fs.NArg() == 0 {
 		return mspScan(sess, uint8(*from), uint8(*maxCode), *timeout, *asJSON)
 	}
-	code, err := resolveMSPCode(fs.Arg(0))
-	if err != nil {
-		fmt.Fprintln(os.Stderr, "bfctl:", err)
-		return exitUsage
+	codes := make([]uint8, 0, fs.NArg())
+	for i := 0; i < fs.NArg(); i++ {
+		c, err := resolveMSPCode(fs.Arg(i))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "bfctl:", err)
+			return exitUsage
+		}
+		codes = append(codes, c)
 	}
-	return mspQueryOne(sess, code, *timeout, *asJSON)
+	if len(codes) == 1 {
+		return mspQueryOne(sess, codes[0], *timeout, *asJSON)
+	}
+	return mspQueryList(sess, codes, *timeout, *asJSON)
 }
 
 // resolveMSPCode accepts a decimal number, a 0x-prefixed hex number, or an
@@ -977,6 +1004,40 @@ func makeMSPResult(resp msp.Response) mspResult {
 		Hex:     hex.EncodeToString(resp.Payload),
 		Decoded: msp.Decode(resp.Code, resp.Payload),
 	}
+}
+
+// mspQueryList queries each code in turn and prints the replies. Unlike
+// mspScan it does not consult the denylist (the user named the codes
+// explicitly) and unlike mspQueryOne it tolerates partial failure: any
+// code that times out or is rejected logs to stderr and the loop
+// continues, but the exit code is non-zero if any code failed.
+func mspQueryList(sess *fc.MSPSession, codes []uint8, timeout time.Duration, asJSON bool) int {
+	results := make([]mspResult, 0, len(codes))
+	rc := exitOK
+	for _, code := range codes {
+		resp, err := sess.Query(code, nil, timeout)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "bfctl: MSP %d (%s): %v\n", code, msp.Name(code), err)
+			rc = exitGeneric
+			continue
+		}
+		if !resp.OK() {
+			fmt.Fprintf(os.Stderr, "bfctl: FC rejected MSP %d (%s)\n", code, msp.Name(code))
+			rc = exitGeneric
+			continue
+		}
+		results = append(results, makeMSPResult(resp))
+	}
+	if asJSON {
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(results)
+		return rc
+	}
+	for _, r := range results {
+		printMSPResult(r)
+	}
+	return rc
 }
 
 func mspQueryOne(sess *fc.MSPSession, code uint8, timeout time.Duration, asJSON bool) int {
