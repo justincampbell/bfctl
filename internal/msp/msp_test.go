@@ -131,6 +131,22 @@ func TestRequestRoundTrip(t *testing.T) {
 	}
 }
 
+func TestIsDenylisted(t *testing.T) {
+	for _, code := range Denylist {
+		if !IsDenylisted(code) {
+			t.Errorf("IsDenylisted(%d) = false, want true", code)
+		}
+	}
+	for _, code := range []uint8{1, 2, 101, 130, 187, 199} {
+		if IsDenylisted(code) {
+			t.Errorf("IsDenylisted(%d) = true, want false", code)
+		}
+	}
+	if !IsDenylisted(188) {
+		t.Errorf("IsDenylisted(188 MSP_SET_OSD_CANVAS) must be true — proven brick on AT32 firmware")
+	}
+}
+
 func TestNameKnownAndUnknown(t *testing.T) {
 	if Name(1) != "MSP_API_VERSION" {
 		t.Errorf("Name(1) = %q, want MSP_API_VERSION", Name(1))

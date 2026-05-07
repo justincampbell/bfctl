@@ -916,7 +916,7 @@ func cmdMSP(args []string) int {
 	asJSON := fs.Bool("json", false, "emit JSON")
 	timeout := fs.Duration("timeout", 500*time.Millisecond, "per-query timeout")
 	from := fs.Uint("from", 1, "scan: lowest code to probe")
-	maxCode := fs.Uint("max", uint(msp.SafeScanCeiling), "scan: highest code to probe (cap "+strconv.Itoa(msp.MaxScanCode)+"; default ceiling avoids known-destructive 131+ range)")
+	maxCode := fs.Uint("max", uint(msp.SafeScanCeiling), "scan: highest code to probe (cap "+strconv.Itoa(msp.MaxScanCode)+"; codes flagged destructive are skipped)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -1012,7 +1012,12 @@ func mspScan(sess *fc.MSPSession, from, max uint8, timeout time.Duration, asJSON
 		return exitUsage
 	}
 	var results []mspResult
+	skipped := 0
 	for code := uint16(from); code <= uint16(max); code++ {
+		if msp.IsDenylisted(uint8(code)) {
+			skipped++
+			continue
+		}
 		resp, err := sess.Query(uint8(code), nil, timeout)
 		if err != nil || !resp.OK() {
 			// Timeout or FC error response: code isn't supported on this
@@ -1021,6 +1026,9 @@ func mspScan(sess *fc.MSPSession, from, max uint8, timeout time.Duration, asJSON
 			continue
 		}
 		results = append(results, makeMSPResult(resp))
+	}
+	if skipped > 0 {
+		fmt.Fprintf(os.Stderr, "bfctl: skipped %d code(s) flagged destructive (use `bfctl msp <code>` to opt in)\n", skipped)
 	}
 	if asJSON {
 		enc := json.NewEncoder(os.Stdout)

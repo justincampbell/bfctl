@@ -38,14 +38,45 @@ const (
 const MaxScanCode = 199
 
 // SafeScanCeiling is the highest code probed when `bfctl msp` is invoked
-// without an explicit --max. The 131–199 range contains at least one code
-// that bricks current Betaflight on the LIONBEE_V1 (observed: full scan
-// caused the FC to wedge with no LED animation and no USB enumeration; a
-// re-flash via DFU was the only recovery). 99 is well below that and
-// covers every code with a Decode() entry plus a comfortable margin.
-// Users who explicitly opt in via --max can scan further at their own
-// risk.
-const SafeScanCeiling = 99
+// without an explicit --max. A scan once bricked a LIONBEE_V1 (Betaflight
+// 2025.12.1, AT32F435G); reading Betaflight's `src/main/msp/msp.c` pinned
+// the cause to MSP_SET_OSD_CANVAS (188), which on a 0-byte payload reads
+// garbage canvas dimensions, force-sets video_system to HD, calls
+// writeEEPROM(), and reboots — corrupting the persisted OSD config.
+// That code (along with the other writers in 131–199) is on Denylist, so
+// it's safe to scan up to MaxScanCode by default.
+const SafeScanCeiling = MaxScanCode
+
+// Denylist is the set of MSP codes scan mode refuses to send. Each entry
+// is an "in" handler that, when called with a 0-byte payload (which is
+// what scan sends), would reboot the FC, wipe storage, or corrupt config.
+// 188 is the proven brick; 68 desyncs the scan (FC reboots mid-loop, so
+// no replies follow until reopen); 72 silently erases blackbox flash;
+// the others are zero-cost adds — a scan can't read writers anyway.
+// Single-code queries (`bfctl msp 188`) bypass this for opt-in research.
+//
+// Source citations are in betaflight/src/main/msp/msp.c (line numbers as
+// of upstream main 407f3f9):
+//
+//	 68 MSP_REBOOT                — line 2417: registers mspRebootFn; FC reboots after a 1-byte reply
+//	 72 MSP_DATAFLASH_ERASE       — line 3912: unconditional blackboxEraseAll()
+//	141 MSP_SET_SIMPLIFIED_TUNING — line 3855: garbage→PID profile + gyro filter
+//	181 MSP_SET_OSD_VIDEO_CONFIG  — protocol-defined writer (no current handler)
+//	183 MSP_COPY_PROFILE          — line 2873: pidCopyProfile(garbage, garbage)
+//	185 MSP_SET_BEEPER_CONFIG     — line 3972: garbage→beeper_off_flags
+//	186 MSP_SET_TX_INFO           — line 4251: garbage→RSSI MSP
+//	188 MSP_SET_OSD_CANVAS        — line 4702: writeEEPROM() + systemReset()
+var Denylist = []uint8{68, 72, 141, 181, 183, 185, 186, 188}
+
+// IsDenylisted reports whether a code is in Denylist.
+func IsDenylisted(code uint8) bool {
+	for _, c := range Denylist {
+		if c == code {
+			return true
+		}
+	}
+	return false
+}
 
 // Response is one parsed MSP v1 reply.
 type Response struct {
