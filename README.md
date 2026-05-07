@@ -49,6 +49,8 @@ bfctl msp 116 --json             # …same, JSON output
 
 `bfctl msp` requires the FC to be in MSP mode (freshly booted). If you've already run `bfctl set` / `bfctl exec` / `bfctl cli` since power-up, the FC stays in CLI mode — power-cycle before running MSP queries.
 
+The default scan only probes codes 1–99. The 131–199 range contains at least one code that bricks current Betaflight (observed on the LIONBEE_V1 — DFU re-flash required to recover). To scan further use `--max` explicitly and at your own risk.
+
 If more than one FC is plugged in, pass `--port`:
 
 ```sh

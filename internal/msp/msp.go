@@ -31,10 +31,21 @@ const (
 	DirErr    = '!' // FC → host, FC rejected the command
 )
 
-// MaxScanCode is the highest MSP code bfctl will probe in a `dump all` scan.
-// Codes 200+ are MSP_SET_* writers; sending them with a 0-byte payload is
-// almost always a no-op error response, but to be safe we don't poke them.
+// MaxScanCode is the absolute upper bound bfctl will let a scan reach.
+// Codes 200+ are MSP_SET_* writers; sending them with a 0-byte payload
+// usually produces a no-op error response, but to be safe we don't poke
+// them.
 const MaxScanCode = 199
+
+// SafeScanCeiling is the highest code probed when `bfctl msp` is invoked
+// without an explicit --max. The 131–199 range contains at least one code
+// that bricks current Betaflight on the LIONBEE_V1 (observed: full scan
+// caused the FC to wedge with no LED animation and no USB enumeration; a
+// re-flash via DFU was the only recovery). 99 is well below that and
+// covers every code with a Decode() entry plus a comfortable margin.
+// Users who explicitly opt in via --max can scan further at their own
+// risk.
+const SafeScanCeiling = 99
 
 // Response is one parsed MSP v1 reply.
 type Response struct {

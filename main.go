@@ -916,7 +916,7 @@ func cmdMSP(args []string) int {
 	asJSON := fs.Bool("json", false, "emit JSON")
 	timeout := fs.Duration("timeout", 500*time.Millisecond, "per-query timeout")
 	from := fs.Uint("from", 1, "scan: lowest code to probe")
-	maxCode := fs.Uint("max", uint(msp.MaxScanCode), "scan: highest code to probe")
+	maxCode := fs.Uint("max", uint(msp.SafeScanCeiling), "scan: highest code to probe (cap "+strconv.Itoa(msp.MaxScanCode)+"; default ceiling avoids known-destructive 131+ range)")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
