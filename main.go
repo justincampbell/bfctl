@@ -106,10 +106,19 @@ Run 'bfctl <command> --help' for command-specific flags.
 
 // ----- backup -----
 
+// cmdBackup writes the FC's `diff all` body, wrapped in the Configurator
+// backup-file format, to one of three destinations:
+//
+//   - `--out <dir>` (an existing directory, including the default `.`):
+//     auto-named file inside that directory using the Configurator's
+//     `BTFL_cli_backup_<CRAFT>_<ts>_<BOARD>.txt` convention.
+//   - `--out <file>` (anything else): exact file path. Parent directories
+//     are created if missing; existing file is overwritten.
+//   - `--out -`: write to stdout. Nothing else is printed (useful for piping).
 func cmdBackup(args []string) int {
 	fs := flag.NewFlagSet("backup", flag.ContinueOnError)
 	port := fs.String("port", "", "serial device path (default: auto-detect)")
-	out := fs.String("out", ".", "output directory")
+	out := fs.String("out", ".", "output destination: directory, file path, or `-` for stdout")
 	if err := fs.Parse(args); err != nil {
 		return exitUsage
 	}
@@ -119,16 +128,39 @@ func cmdBackup(args []string) int {
 		return reportFCErr(err)
 	}
 
-	info := dump.Parse(body)
-	name := backupFilename(info, time.Now())
-	path := filepath.Join(*out, name)
+	payload := []byte(formatBackup(body))
 
-	if err := os.WriteFile(path, []byte(formatBackup(body)), 0o644); err != nil {
+	if *out == "-" {
+		if _, err := os.Stdout.Write(payload); err != nil {
+			fmt.Fprintln(os.Stderr, "bfctl:", err)
+			return exitGeneric
+		}
+		return exitOK
+	}
+
+	path := resolveBackupPath(*out, dump.Parse(body), time.Now())
+	if dir := filepath.Dir(path); dir != "" && dir != "." {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			fmt.Fprintln(os.Stderr, "bfctl:", err)
+			return exitGeneric
+		}
+	}
+	if err := os.WriteFile(path, payload, 0o644); err != nil {
 		fmt.Fprintln(os.Stderr, "bfctl:", err)
 		return exitGeneric
 	}
 	fmt.Println(path)
 	return exitOK
+}
+
+// resolveBackupPath turns an --out value into the file path to write. If out
+// names an existing directory, the Configurator-style auto-generated filename
+// is joined onto it; otherwise out is the destination path verbatim.
+func resolveBackupPath(out string, info dump.Info, when time.Time) string {
+	if fi, err := os.Stat(out); err == nil && fi.IsDir() {
+		return filepath.Join(out, backupFilename(info, when))
+	}
+	return out
 }
 
 // formatBackup wraps a raw `diff all` body into the file format the web

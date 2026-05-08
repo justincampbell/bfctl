@@ -28,6 +28,8 @@ Plug the FC in via USB and run:
 
 ```sh
 bfctl backup                 # save full config to BTFL_cli_backup_<craft>_<ts>_<board>.txt
+bfctl backup --out my.txt    # …to a specific file path
+bfctl backup --out -         # …to stdout
 bfctl diff                   # print non-default settings (FC's `diff all`)
 bfctl dump                   # print every setting (FC's `dump all`, including defaults)
 bfctl get craft_name         # print one setting
@@ -57,10 +59,12 @@ If more than one FC is plugged in, pass `--port`:
 bfctl backup --port /dev/cu.usbmodem2070378831451
 ```
 
-`backup` writes to the current directory by default; use `--out` to choose another:
+`backup` writes a Configurator-style auto-generated filename to the current directory by default. `--out` accepts three forms:
 
 ```sh
-bfctl backup --out backups/
+bfctl backup --out backups/      # auto-generated filename inside backups/
+bfctl backup --out my-config.txt # exact file path; parent dirs created if needed
+bfctl backup --out -             # write to stdout (nothing else is printed)
 ```
 
 ## Exit codes
