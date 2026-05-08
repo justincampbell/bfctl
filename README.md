@@ -49,7 +49,7 @@ bfctl msp 116 --json             # …same, JSON output
 
 `bfctl msp` requires the FC to be in MSP mode (freshly booted). If you've already run `bfctl set` / `bfctl exec` / `bfctl cli` since power-up, the FC stays in CLI mode — power-cycle before running MSP queries.
 
-The default scan only probes codes 1–99. The 131–199 range contains at least one code that bricks current Betaflight (observed on the LIONBEE_V1 — DFU re-flash required to recover). To scan further use `--max` explicitly and at your own risk.
+The scan covers codes 1–199 by default and skips a denylist of every "in message" writer in that range. Sending those writers with a 0-byte payload corrupts config (because Betaflight doesn't bounds-check `sbufReadU8`); MSP_SET_OSD_CANVAS (188) bricked a LIONBEE_V1 outright (DFU re-flash to recover). A scan can't read anything useful from a writer anyway, so the cost is zero. Single-code queries like `bfctl msp 188` bypass the denylist for opt-in research.
 
 If more than one FC is plugged in, pass `--port`:
 
@@ -79,7 +79,9 @@ Stable exit codes for scripting and agent use:
 
 ## How it works
 
-The FC enumerates as a USB CDC ACM device. `bfctl` matches on the USB Product string (`Betaflight …` for STM32 targets, `AT32 Virtual Com Port` for Artery AT32 targets) — and falls back to VID:PID (`0483:5740` for STM32, `2E3C:5740` for AT32) on platforms that don't surface the Product field. A single binary covers both MCU families. `bfctl` opens the matching `/dev/cu.usbmodem*`, sends `#\r\n` to enter CLI mode, runs `diff all`, and captures the output. It does **not** send `exit` (which would reboot the FC) — it just closes the port.
+The FC enumerates as a USB CDC ACM device. `bfctl` matches on the USB Product string (`Betaflight …` for STM32 targets, `AT32 Virtual Com Port` for Artery AT32 targets) — and falls back to VID:PID (`0483:5740` for STM32, `2E3C:5740` for AT32) on platforms that don't surface the Product field. A single binary covers both MCU families.
+
+To enter CLI mode, `bfctl` first sends an `MSP_API_VERSION` frame to wake the FC's USB parser (a cold `#` is silently ignored), then sends a single-byte `#`. It does **not** send `exit` (which would reboot the FC) — it just closes the port. `bfctl info` and `bfctl msp` skip the `#` step and stay in MSP mode; everything else uses the CLI path.
 
 If you see "no data" errors, the most common cause is a stale Chrome WebSerial lock from the web Configurator tab. Quit Chrome and retry.
 
