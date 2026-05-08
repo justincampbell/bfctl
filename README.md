@@ -30,6 +30,7 @@ Plug the FC in via USB and run:
 bfctl backup                 # save full config to BTFL_cli_backup_<craft>_<ts>_<board>.txt
 bfctl backup --out my.txt    # …to a specific file path
 bfctl backup --out -         # …to stdout
+bfctl craft                  # print just the lowercase craft name
 bfctl diff                   # print non-default settings (FC's `diff all`)
 bfctl dump                   # print every setting (FC's `dump all`, including defaults)
 bfctl get craft_name         # print one setting

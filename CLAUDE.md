@@ -30,11 +30,13 @@ internal/dump/dump.go         — parse craft_name, board_name, etc. out of a `d
 
 `internal/dump/dump_test.go` carries an inline synthetic `diff all` fixture. Real captured dumps from the user's drones are gitignored (`air65.txt`, `BTFL_cli_backup_*.txt`) — do not check them in.
 
-Subcommands: `backup`, `cli`, `diff`, `dump`, `exec`, `get`, `info`, `msp`, `ports`, `restore`, `set`, `version`.
+Subcommands: `backup`, `cli`, `craft`, `diff`, `dump`, `exec`, `get`, `info`, `msp`, `ports`, `restore`, `set`, `version`.
 
 `backup` writes the Configurator-style backup file. `--out` accepts three forms: an existing directory (auto-named `BTFL_cli_backup_…txt` inside), a file path (used verbatim, parent dirs created if missing, overwrites existing), or `-` (stdout — nothing else is printed, so it's pipe-friendly). Output always ends with exactly one `\n` so line-oriented tools and `git diff` don't complain. The file-path form was added so callers don't have to `mktemp -d` + glob + `mv` to land output at a known name.
 
 `diff` and `dump` are thin wrappers around the FC's commands of the same name. `bfctl diff` runs `diff all` (non-defaults only); `bfctl dump` runs `dump all` (everything). Both print the FC's reply verbatim — neither prepends `defaults nosave`. That backup-file convention lives in `formatBackup`, used only by `bfctl backup`. Naming rule: when a subcommand maps 1:1 onto an FC CLI command, its name should match the FC's name; otherwise call it something else and document the deviation here.
+
+`craft` is MSP-only (same path as `info`) and prints the lowercase craft name on stdout. Exits 6 (key-not-found) with a stderr message if `craft_name` is empty. Replaces the `bfctl info -json | jq -r '.craft_name' | tr '[:upper:]' '[:lower:]'` shell incantation. Doesn't switch the FC into CLI mode, so it composes with subsequent `bfctl msp …` calls without a power-cycle.
 
 `info` is **MSP-only** by deliberate design — it never sends `#` to enter CLI mode. Earlier versions used the `diff all` CLI path to harvest every metadata field in one shot; that left the FC in CLI mode and silently broke any subsequent `bfctl msp …` invocation until the next reboot. `internal/fc/info.go` now stitches the same fields together from `MSP_API_VERSION` / `MSP_FC_VARIANT` / `MSP_FC_VERSION` / `MSP_BOARD_INFO` / `MSP_BUILD_INFO` / `MSP_NAME` / `MSP_UID`. One regression: `pilot_name` is not exposed by any v1 MSP — only `MSP2_GET_TEXT` (v2), which we don't speak — so the `Pilot:` line is dropped from human output and the JSON `pilot_name` field is always `""`. Callers that need pilot name must use `bfctl get pilot_name` (which does enter CLI mode, same caveat as `set`/`exec`/`cli`).
 

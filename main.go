@@ -51,6 +51,8 @@ func main() {
 		os.Exit(cmdBackup(os.Args[2:]))
 	case "cli":
 		os.Exit(cmdCLI(os.Args[2:]))
+	case "craft":
+		os.Exit(cmdCraft(os.Args[2:]))
 	case "diff":
 		os.Exit(cmdDiff(os.Args[2:]))
 	case "dump":
@@ -89,6 +91,7 @@ Usage:
 Commands:
   backup   Save full configuration to a file
   cli      Open an interactive Betaflight CLI session
+  craft    Print the lowercase craft name (exit non-zero if unset)
   diff     Print non-default settings (`+"`diff all`"+`)
   dump     Print every setting (`+"`dump all`"+`, including defaults)
   exec     Send one CLI command verbatim and print the reply
@@ -649,6 +652,40 @@ func cmdInfo(args []string) int {
 	fmt.Printf("MCU ID:     %s\n", info.MCUID)
 	fmt.Printf("Firmware:   %s\n", info.Firmware)
 	fmt.Printf("Craft:      %s\n", info.CraftName)
+	return exitOK
+}
+
+// ----- craft -----
+
+// cmdCraft prints the FC's craft name, lowercased, on its own line. Exits
+// non-zero with a clear stderr message if the FC has no craft name set.
+//
+// MSP-only (same path as `bfctl info`) so calling it doesn't switch the FC
+// into CLI mode and break subsequent MSP queries. The point is to replace
+// the `bfctl info -json | jq -r '.craft_name' | tr '[:upper:]' '[:lower:]'`
+// shell incantation with a single command.
+func cmdCraft(args []string) int {
+	fs := flag.NewFlagSet("craft", flag.ContinueOnError)
+	port := fs.String("port", "", "serial device path (default: auto-detect)")
+	if err := fs.Parse(args); err != nil {
+		return exitUsage
+	}
+
+	path, err := fc.Resolve(*port)
+	if err != nil {
+		return reportFCErr(err)
+	}
+	info, err := fc.QueryInfo(path)
+	if err != nil {
+		return reportFCErr(err)
+	}
+
+	name := strings.ToLower(strings.TrimSpace(info.CraftName))
+	if name == "" {
+		fmt.Fprintln(os.Stderr, "bfctl: craft_name is not set on this FC")
+		return exitNotFound
+	}
+	fmt.Println(name)
 	return exitOK
 }
 
