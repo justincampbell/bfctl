@@ -165,15 +165,15 @@ func resolveBackupPath(out string, info dump.Info, when time.Time) string {
 
 // formatBackup wraps a raw `diff all` body into the file format the web
 // Configurator produces: a leading `defaults nosave` so the file is a
-// self-contained restore script, two blank separator lines, then the body.
-// The FC's `diff all` output already starts with a newline before
-// "# version", so prepending "defaults nosave\n\n" yields three newlines
-// (two blank lines) between the prefix and the body.
+// self-contained restore script, two blank separator lines, then the body,
+// and exactly one trailing newline (POSIX text-file convention so line-
+// oriented tools and `git diff` don't complain).
 func formatBackup(body string) string {
 	if !strings.HasPrefix(body, "\n") {
 		body = "\n" + body
 	}
-	return "defaults nosave\n\n" + body
+	body = strings.TrimRight(body, "\n")
+	return "defaults nosave\n\n" + body + "\n"
 }
 
 // backupFilename matches the convention used by app.betaflight.com so saved
