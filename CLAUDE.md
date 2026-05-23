@@ -87,7 +87,7 @@ Keep this file current. Update it when:
 - An exit code is added or its meaning shifts
 - The release/install workflow changes
 
-Don't document speculative features. Reserved future subcommands (`cli`, `set`, `restore`) get a one-line mention so naming collisions are avoided, nothing more.
+Don't document speculative features. If a subcommand is reserved for the future, give it a one-line mention so naming collisions are avoided, nothing more.
 
 ## Releasing
 
